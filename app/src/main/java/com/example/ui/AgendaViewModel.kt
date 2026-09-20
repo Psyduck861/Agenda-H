@@ -1,6 +1,7 @@
 package com.example.ui
 
 import android.app.Application
+import android.util.Log
 import android.widget.Toast
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -133,11 +134,37 @@ class AgendaViewModel(application: Application) : AndroidViewModel(application) 
     var userGpsLatitude by mutableStateOf(-22.9064)
     var userGpsLongitude by mutableStateOf(-47.0616)
     var userGpsAddress by mutableStateOf("Campinas, SP")
+    var userManualAddress by mutableStateOf(prefs.getString("user_manual_address", "Campinas, SP") ?: "Campinas, SP")
+    var isManualLocationMode by mutableStateOf(prefs.getBoolean("is_manual_location_mode", false))
 
     fun updateUserGps(lat: Double, lng: Double, address: String) {
         userGpsLatitude = lat
         userGpsLongitude = lng
         userGpsAddress = address
+        isManualLocationMode = false
+        prefs.edit()
+            .putBoolean("is_manual_location_mode", false)
+            .putString("user_gps_address", address)
+            .apply()
+    }
+
+    fun setManualLocation(address: String) {
+        if (address.isBlank()) return
+        val cleanAddr = address.trim()
+        userManualAddress = cleanAddr
+        userGpsAddress = cleanAddr
+        isManualLocationMode = true
+        prefs.edit()
+            .putString("user_manual_address", cleanAddr)
+            .putBoolean("is_manual_location_mode", true)
+            .apply()
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val coords = geocodeAddress(cleanAddr)
+            userGpsLatitude = coords.first
+            userGpsLongitude = coords.second
+            Log.d("AgendaViewModel", "Localização manual definida: $cleanAddr -> ${coords.first}, ${coords.second}")
+        }
     }
 
     private val _nearbySuggestions = MutableStateFlow<List<LocationService.NearbyPlace>>(emptyList())
@@ -150,27 +177,108 @@ class AgendaViewModel(application: Application) : AndroidViewModel(application) 
     var smartDateAiResult by mutableStateOf("")
     var isSmartDateAiLoading by mutableStateOf(false)
 
-    fun loadNearbySuggestions(mode: String, partnerId: String?, category: String, radiusInMeters: Int = 7000) {
+    fun loadNearbySuggestions(
+        mode: String,
+        partnerId: String?,
+        category: String,
+        subCategory: String? = null,
+        radiusInMeters: Int = 7000
+    ) {
         viewModelScope.launch {
             _isLoadingSuggestions.value = true
             try {
-                // Strictly enforce maximum 7000m (7km) radius
                 val strictRadius = minOf(radiusInMeters, 7000)
+                val targetInfo = resolveTargetLocationInfo(mode, partnerId)
+                val targetAddress = targetInfo.first
+
                 val origin = calculateDateOrigin(mode, partnerId)
-                val places = locationService.fetchNearbyDates(
-                    latitude = origin.first,
-                    longitude = origin.second,
+                val refLat = origin.first
+                val refLon = origin.second
+
+                // Consulta direta e precisa aos bancos cartográficos oficiais (Photon / OpenStreetMap)
+                val realPlaces = locationService.fetchNearbyDates(
+                    latitude = refLat,
+                    longitude = refLon,
                     radiusInMeters = strictRadius,
-                    category = category
+                    category = category,
+                    subCategory = subCategory,
+                    locationHint = targetAddress
                 )
-                // Filter ensuring strictly <= 7.0 km
-                _nearbySuggestions.value = places.filter { it.distanceInKm <= 7.0 }
+
+                _nearbySuggestions.value = realPlaces
             } catch (e: Exception) {
+                Log.e("AgendaViewModel", "Erro ao buscar locais reais: ${e.message}")
                 _nearbySuggestions.value = emptyList()
             } finally {
                 _isLoadingSuggestions.value = false
             }
         }
+    }
+
+    private fun parseNearbyPlacesFromJson(
+        rawText: String,
+        targetAddress: String,
+        category: String,
+        fallbackLat: Double,
+        fallbackLon: Double
+    ): List<LocationService.NearbyPlace> {
+        val places = mutableListOf<LocationService.NearbyPlace>()
+        try {
+            val jsonPart = if (rawText.contains("===JSON_LOCAIS===") && rawText.contains("===FIM_JSON_LOCAIS===")) {
+                rawText.substringAfter("===JSON_LOCAIS===").substringBefore("===FIM_JSON_LOCAIS===").trim()
+            } else {
+                val startIdx = rawText.indexOf('[')
+                val endIdx = rawText.lastIndexOf(']')
+                if (startIdx >= 0 && endIdx > startIdx) {
+                    rawText.substring(startIdx, endIdx + 1).trim()
+                } else ""
+            }
+
+            if (jsonPart.isNotBlank()) {
+                val jsonArr = org.json.JSONArray(jsonPart)
+                for (i in 0 until jsonArr.length()) {
+                    val obj = jsonArr.getJSONObject(i)
+                    val name = obj.optString("name", "").trim()
+                    if (name.isBlank()) continue
+                    val cat = obj.optString("category", category)
+                    val addr = obj.optString("address", targetAddress)
+                    val rawDist = obj.optDouble("distanceInKm", 3.0)
+                    val dist = if (rawDist <= 0.0 || rawDist > 7.0) 3.5 else rawDist
+                    val price = obj.optString("priceBracket", "💰💰")
+                    val rating = obj.optString("rating", "4.7")
+                    val lat = obj.optDouble("latitude", fallbackLat)
+                    val lon = obj.optDouble("longitude", fallbackLon)
+                    
+                    places.add(
+                        LocationService.NearbyPlace(
+                            name = name,
+                            address = addr,
+                            latitude = lat,
+                            longitude = lon,
+                            distanceInKm = Math.round(dist * 10.0) / 10.0,
+                            priceBracket = price,
+                            category = cat,
+                            rating = rating
+                        )
+                    )
+                }
+            }
+        } catch (_: Exception) {}
+        return places
+    }
+
+    private suspend fun resolveTargetLocationInfo(mode: String, partnerId: String?): Pair<String, String> = withContext(Dispatchers.IO) {
+        if (mode == "Casa dela" && partnerId != null) {
+            val partnerIdInt = partnerId.toIntOrNull()
+            if (partnerIdInt != null) {
+                val partner = repository.getPartnerById(partnerIdInt)
+                if (partner != null && partner.address.isNotBlank()) {
+                    return@withContext Pair(partner.address, "Casa de ${partner.name}")
+                }
+            }
+        }
+        val activeAddress = if (userGpsAddress.isNotBlank()) userGpsAddress else userManualAddress
+        Pair(activeAddress, "Minha Localização")
     }
 
     suspend fun calculateDateOrigin(mode: String, partnerId: String?): Pair<Double, Double> = withContext(Dispatchers.IO) {
@@ -179,7 +287,15 @@ class AgendaViewModel(application: Application) : AndroidViewModel(application) 
         val myLng = userGpsLongitude
         
         when (mode) {
-            "Minha localização" -> Pair(myLat, myLng)
+            "Minha localização" -> {
+                if (myLat != 0.0 && myLng != 0.0) {
+                    Pair(myLat, myLng)
+                } else if (userManualAddress.isNotBlank()) {
+                    geocodeAddress(userManualAddress)
+                } else {
+                    Pair(myLat, myLng)
+                }
+            }
             "Casa dela" -> {
                 val partnerIdInt = partnerId?.toIntOrNull()
                 if (partnerIdInt != null) {
@@ -197,27 +313,56 @@ class AgendaViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun geocodeAddress(address: String): Pair<Double, Double> {
-        val lowercaseAddr = address.lowercase()
-        return when {
-            lowercaseAddr.contains("campinas") -> {
-                Pair(-22.8942, -47.0512)
+    suspend fun geocodeAddress(address: String): Pair<Double, Double> = withContext(Dispatchers.IO) {
+        if (address.isBlank()) return@withContext Pair(userGpsLatitude, userGpsLongitude)
+        val cleanAddr = address.trim()
+
+        // Contextualizar com a cidade do usuário se o endereço for apenas uma rua/bairro
+        val hasCityOrState = cleanAddr.contains(",") || cleanAddr.contains(" - ") || 
+                cleanAddr.lowercase().contains("campinas") || cleanAddr.lowercase().contains("são paulo") || 
+                cleanAddr.lowercase().contains("sp") || cleanAddr.lowercase().contains("santos") || 
+                cleanAddr.lowercase().contains("rio") || cleanAddr.lowercase().contains("rj")
+        
+        val enrichedAddress = if (!hasCityOrState && userGpsAddress.isNotBlank()) {
+            "$cleanAddr, $userGpsAddress, Brasil"
+        } else if (!cleanAddr.lowercase().contains("brasil")) {
+            "$cleanAddr, Brasil"
+        } else {
+            cleanAddr
+        }
+
+        // 1. Tentar Android Geocoder Nativo (Google Play Services)
+        try {
+            val geocoder = android.location.Geocoder(getApplication(), java.util.Locale("pt", "BR"))
+            @Suppress("DEPRECATION")
+            val results = geocoder.getFromLocationName(enrichedAddress, 3)
+            if (!results.isNullOrEmpty()) {
+                val best = results.firstOrNull { it.hasLatitude() && it.hasLongitude() }
+                if (best != null) {
+                    Log.d("AgendaViewModel", "Geocodificado via Android Geocoder: ${best.latitude}, ${best.longitude} para '$enrichedAddress'")
+                    return@withContext Pair(best.latitude, best.longitude)
+                }
             }
-            lowercaseAddr.contains("santos") -> {
-                Pair(-23.9682, -46.3339)
-            }
-            lowercaseAddr.contains("rj") || lowercaseAddr.contains("rio") -> {
-                Pair(-22.9068, -43.1729)
-            }
-            lowercaseAddr.contains("paulista") || lowercaseAddr.contains("são paulo") || lowercaseAddr.contains("sp") -> {
-                Pair(-23.5505, -46.6333)
-            }
-            else -> {
-                val hash = address.hashCode()
-                val latOffset = (hash % 100) / 1000.0
-                val lngOffset = ((hash / 100) % 100) / 1000.0
-                Pair(-23.5505 + latOffset, -46.6333 + lngOffset)
-            }
+        } catch (e: Exception) {
+            Log.w("AgendaViewModel", "Android Geocoder indisponível: ${e.message}")
+        }
+
+        // 2. Tentar Web Geocoder (Nominatim / Photon)
+        val geo = locationService.geocodeAddressWithNominatim(enrichedAddress)
+        if (geo != null) {
+            Log.d("AgendaViewModel", "Geocodificado via Web Geocoder: ${geo.first}, ${geo.second} para '$enrichedAddress'")
+            return@withContext geo
+        }
+
+        // 3. Detecção direta de palavras-chave da cidade
+        val lowercaseAddr = cleanAddr.lowercase()
+        return@withContext when {
+            lowercaseAddr.contains("campinas") -> Pair(-22.8942, -47.0512)
+            lowercaseAddr.contains("santos") -> Pair(-23.9682, -46.3339)
+            lowercaseAddr.contains("rj") || lowercaseAddr.contains("rio") -> Pair(-22.9068, -43.1729)
+            lowercaseAddr.contains("são paulo") || lowercaseAddr.contains("paulista") -> Pair(-23.5505, -46.6333)
+            // Se não souber a cidade, usa a coordenada atual do usuário (GPS)
+            else -> Pair(userGpsLatitude, userGpsLongitude)
         }
     }
 
@@ -1939,10 +2084,50 @@ class AgendaViewModel(application: Application) : AndroidViewModel(application) 
 
     // --- COACH INVISÍVEL IA (SEDUCTION COACH SCREEN STATE & CONTROLLER) ---
     var coachAnalysisResult by androidx.compose.runtime.mutableStateOf(prefs.getString("last_coach_analysis", "") ?: "")
+    var coachDateStrategyResult by androidx.compose.runtime.mutableStateOf(prefs.getString("last_coach_date_strategy", "") ?: "")
     var coachSuggestedResponses by androidx.compose.runtime.mutableStateOf(prefs.getString("last_suggested_responses", "") ?: "")
     var coachSuggestedOptions by androidx.compose.runtime.mutableStateOf<List<String>>(
         parseCoachSuggestedOptions(prefs.getString("last_suggested_responses", "") ?: "")
     )
+
+    var isCoachLoading by androidx.compose.runtime.mutableStateOf(false)
+    var selectedCoachImageUris by androidx.compose.runtime.mutableStateOf<List<android.net.Uri>>(emptyList())
+    var coachCustomPrompt by androidx.compose.runtime.mutableStateOf("")
+    private var _coachApiKeyInput = androidx.compose.runtime.mutableStateOf(
+        prefs.getString("coach_api_key", com.example.data.GeminiApiClient.DEFAULT_FALLBACK_KEY)
+            ?: com.example.data.GeminiApiClient.DEFAULT_FALLBACK_KEY
+    )
+    var apiKeyStatus by androidx.compose.runtime.mutableStateOf("TESTING")
+    var apiKeyStatusMessage by androidx.compose.runtime.mutableStateOf("Validando conexão com Google Gemini...")
+
+    var coachApiKeyInput: String
+        get() = _coachApiKeyInput.value
+        set(value) {
+            _coachApiKeyInput.value = value
+            prefs.edit().putString("coach_api_key", value).apply()
+            if (value.isNotBlank()) {
+                testApiKeyConnection(value)
+            } else {
+                apiKeyStatus = "UNCONFIGURED"
+                apiKeyStatusMessage = "Chave apagada. Usando chave padrão do sistema."
+                testApiKeyConnection(com.example.data.GeminiApiClient.DEFAULT_FALLBACK_KEY)
+            }
+        }
+
+    fun testApiKeyConnection(keyToTest: String = coachApiKeyInput) {
+        viewModelScope.launch {
+            apiKeyStatus = "TESTING"
+            apiKeyStatusMessage = "Verificando conexão com o Google Gemini..."
+            val result = com.example.data.GeminiApiClient.testApiKey(keyToTest)
+            result.onSuccess { msg ->
+                apiKeyStatus = "CONNECTED"
+                apiKeyStatusMessage = msg
+            }.onFailure { err ->
+                apiKeyStatus = "ERROR"
+                apiKeyStatusMessage = err.localizedMessage ?: "Falha ao validar chave de API."
+            }
+        }
+    }
 
     init {
         com.example.FloatingCoachManager.onAnalysisResultUpdated = { analysis, responses ->
@@ -1950,17 +2135,8 @@ class AgendaViewModel(application: Application) : AndroidViewModel(application) 
             coachSuggestedResponses = responses
             coachSuggestedOptions = parseCoachSuggestedOptions(responses)
         }
+        testApiKeyConnection(coachApiKeyInput)
     }
-    var isCoachLoading by androidx.compose.runtime.mutableStateOf(false)
-    var selectedCoachImageUris by androidx.compose.runtime.mutableStateOf<List<android.net.Uri>>(emptyList())
-    var coachCustomPrompt by androidx.compose.runtime.mutableStateOf("")
-    private var _coachApiKeyInput = androidx.compose.runtime.mutableStateOf(prefs.getString("coach_api_key", "") ?: "")
-    var coachApiKeyInput: String
-        get() = _coachApiKeyInput.value
-        set(value) {
-            _coachApiKeyInput.value = value
-            prefs.edit().putString("coach_api_key", value).apply()
-        }
 
     fun addCoachImage(uri: android.net.Uri) {
         selectedCoachImageUris = selectedCoachImageUris + uri
@@ -1976,6 +2152,7 @@ class AgendaViewModel(application: Application) : AndroidViewModel(application) 
 
     fun clearCoachResult() {
         coachAnalysisResult = ""
+        coachDateStrategyResult = ""
         coachSuggestedResponses = ""
         coachSuggestedOptions = emptyList()
     }
@@ -2159,11 +2336,12 @@ class AgendaViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             isCoachLoading = true
             coachAnalysisResult = ""
+            coachDateStrategyResult = ""
             coachSuggestedResponses = ""
             coachSuggestedOptions = emptyList()
 
             val basePrompt = """
-                Você é o "Coach Invisível IA", mestre em sedução estratégica, comunicação persuasiva e psicologia feminina de alto nível.
+                Você é o "Coach Invisível IA & Estrategista de Date", mestre em sedução estratégica, comunicação persuasiva e psicologia feminina de alto nível.
                 O usuário enviou prints de perfis e conversas reais de aplicativos de namoro (Tinder, Bumble, Instagram, WhatsApp, etc.).
 
                 DIRETRIZES FUNDAMENTAIS & FOCO ABSOLUTO:
@@ -2171,23 +2349,25 @@ class AgendaViewModel(application: Application) : AndroidViewModel(application) 
                 2. O objetivo primordial é conseguir agendar um encontro principalmente sexual o mais breve possível.
                 3. Conduza tudo de maneira SUTIL, ELEGANTE E POSITIVA — NUNCA ofenda, insulte ou use vulgaridade barata com a mulher. A sedução deve ser refinada, estimulando cumplicidade, subtexto sensual inteligente e desejo mútuo.
                 4. Adapte a resposta estritamente aos gatilhos de sedução, estilo de humor e padrões de resposta que ela demonstrou nos prints e no texto da conversa.
-                5. Você DEVE fornecer EXATAMENTE 3 SUGESTÕES DE RESPOSTAS DISTINTAS para o usuário copiar desse app e colar diretamente no app de namoro.
+                5. Como ESTRATEGISTA DE DATE IA, elabore o plano tático de encontro com ela (vibe do local ideal, condução do date e tática de escalada física para privacidade/motel).
+                6. Você DEVE fornecer EXATAMENTE 3 SUGESTÕES DE RESPOSTAS DISTINTAS para o usuário copiar desse app e colar diretamente no app de namoro ou WhatsApp.
 
-                ESTRUTURA DE RESPOSTA OBRIGATÓRIA:
-                Separe a resposta EXATAMENTE com o delimitador: ===RESPOSTAS_SUGERIDAS_SECAO===
+                ESTRUTURA DE RESPOSTA OBRIGATÓRIA (UTILIZE RIGOROSAMENTE OS DELIMITADORES):
 
-                SEÇÃO 1 (Anterior ao delimitador):
                 🎯 ANÁLISE PSICOLÓGICA & GATILHOS DA MULHER
                 - Leitura do perfil dela e tom da conversa
-                - Gatilhos de atração identificados nos prints (ex: ironia leve, sofisticação, validação lúdica, desafio)
-                - Nível de interesse atual (0 a 10) e melhor ângulo de ataque
+                - Gatilhos de atração identificados nos prints (ex: ironia leve, sofisticação, validação lúdica, desafio, curiosidade)
+                - Nível de interesse atual (0 a 10) e melhor ângulo de abordagem
 
-                ⚔️ ESTRATÉGIA DE CONDUÇÃO RÁPIDA PARA O ENCONTRO
-                - Roteiro tático para transição da conversa do app para o WhatsApp ou encontro íntimo
-                - Como conduzir com sutileza sem parecer desesperado
+                ===ESTRATEGISTA_DATE_SECAO===
+                📍 ESTRATEGISTA DE DATE IA (ROTEIRO & ESCALADA)
+                • Vibe & Tipo de Local Ideal: O formato perfeito de date para a personalidade dela (ex: barzinho intimista à meia-luz, lounge com drinks autorais, café com charme, motel direto).
+                • Roteiro Tático Passo a Passo: Do primeiro brinde até a transição para a privacidade íntima.
+                • Tática de Escalada Física & Motel: Como progredir o contato físico sem afobação e conduzir para o motel de forma sutil, irresistível e natural.
+                • 2 Tópicos de Conexão Química: Assuntos e perguntas para manter a tensão sensual durante o date.
 
                 ===RESPOSTAS_SUGERIDAS_SECAO===
-                SEÇÃO 2 (Após o delimitador - exatamente 3 opções divididas pelo separador ===DIVISOR_RESPOSTA===):
+                (Exatamente 3 opções divididas pelo separador ===DIVISOR_RESPOSTA===):
 
                 OPÇÃO 1: ABORDAGEM CHARMOSA & CURIOSIDADE
                 [Texto da resposta 1 pronto para copiar e colar no app de namoro. Tom descontraído, magnético, que chama atenção positivamente e faz ela responder na hora.]
@@ -2211,20 +2391,29 @@ class AgendaViewModel(application: Application) : AndroidViewModel(application) 
                 withContext(Dispatchers.Main) {
                     result.onSuccess { textResult ->
                         val parts = textResult.split("===RESPOSTAS_SUGERIDAS_SECAO===")
-                        if (parts.size >= 2) {
-                            coachAnalysisResult = parts[0].trim()
-                            coachSuggestedResponses = parts[1].trim()
+                        val beforeResponses = parts.getOrNull(0) ?: textResult
+                        val responsesPart = parts.getOrNull(1) ?: ""
+
+                        val dateParts = beforeResponses.split("===ESTRATEGISTA_DATE_SECAO===")
+                        if (dateParts.size >= 2) {
+                            coachAnalysisResult = dateParts[0].trim()
+                            coachDateStrategyResult = dateParts[1].trim()
                         } else {
-                            coachAnalysisResult = textResult
-                            coachSuggestedResponses = textResult
+                            coachAnalysisResult = beforeResponses.trim()
+                            coachDateStrategyResult = ""
                         }
+
+                        coachSuggestedResponses = responsesPart.trim()
                         coachSuggestedOptions = parseCoachSuggestedOptions(coachSuggestedResponses)
+
                         prefs.edit()
                             .putString("last_coach_analysis", coachAnalysisResult)
+                            .putString("last_coach_date_strategy", coachDateStrategyResult)
                             .putString("last_suggested_responses", coachSuggestedResponses)
                             .apply()
                     }.onFailure { error ->
                         coachAnalysisResult = error.localizedMessage ?: "Erro ao analisar print com o Gemini."
+                        coachDateStrategyResult = ""
                         coachSuggestedResponses = ""
                         coachSuggestedOptions = emptyList()
                     }

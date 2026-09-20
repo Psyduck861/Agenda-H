@@ -12,22 +12,30 @@ object AgendaHFolderManager {
     fun getCandidateDirs(context: Context): List<File> {
         val dirs = mutableListOf<File>()
 
-        // 1. Documents / Agenda H
+        // 1. Armazenamento interno direto / Agenda H (Primary: /storage/emulated/0/Agenda H)
+        try {
+            val root = Environment.getExternalStorageDirectory()
+            dirs.add(File(root, "Agenda H"))
+        } catch (_: Exception) {}
+
+        try {
+            dirs.add(File("/storage/emulated/0/Agenda H"))
+        } catch (_: Exception) {}
+
+        try {
+            dirs.add(File("/sdcard/Agenda H"))
+        } catch (_: Exception) {}
+
+        // 2. Documents / Agenda H
         try {
             val docs = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
             dirs.add(File(docs, "Agenda H"))
         } catch (_: Exception) {}
 
-        // 2. Download / Agenda H
+        // 3. Download / Agenda H
         try {
             val down = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             dirs.add(File(down, "Agenda H"))
-        } catch (_: Exception) {}
-
-        // 3. Storage root / Agenda H
-        try {
-            val root = Environment.getExternalStorageDirectory()
-            dirs.add(File(root, "Agenda H"))
         } catch (_: Exception) {}
 
         // 4. App-specific external files dir / Agenda H
@@ -42,18 +50,16 @@ object AgendaHFolderManager {
             dirs.add(File(context.filesDir, "Agenda H"))
         } catch (_: Exception) {}
 
-        return dirs
+        return dirs.distinctBy { it.absolutePath }
     }
 
     fun getPreferredDir(context: Context): File {
         val candidates = getCandidateDirs(context)
-        // First check if any existing directory exists and is writable
         for (dir in candidates) {
             if (dir.exists() && dir.isDirectory && dir.canWrite()) {
                 return dir
             }
         }
-        // Try creating candidate in Documents or Download
         for (dir in candidates) {
             try {
                 if (!dir.exists()) {
@@ -64,7 +70,6 @@ object AgendaHFolderManager {
                 }
             } catch (_: Exception) {}
         }
-        // Fallback to internal filesDir / Agenda H
         val fallback = File(context.filesDir, "Agenda H")
         if (!fallback.exists()) fallback.mkdirs()
         return fallback
@@ -74,8 +79,7 @@ object AgendaHFolderManager {
         if (json.isBlank()) return Pair(false, "Conteúdo de backup vazio.")
         
         val candidates = getCandidateDirs(context)
-        var savedPath = ""
-        var success = false
+        val savedPaths = mutableListOf<String>()
 
         for (dir in candidates) {
             try {
@@ -91,17 +95,18 @@ object AgendaHFolderManager {
                     val altFile = File(dir, "agenda_h_backup.json")
                     altFile.writeText(json, Charsets.UTF_8)
 
-                    savedPath = standardFile.absolutePath
-                    success = true
-                    break
+                    // Also timestamped backup
+                    val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+                    val timeFile = File(dir, "agenda_backup_$timeStamp.json")
+                    timeFile.writeText(json, Charsets.UTF_8)
+
+                    savedPaths.add(standardFile.absolutePath)
                 }
-            } catch (e: Exception) {
-                // Try next
-            }
+            } catch (_: Exception) {}
         }
 
-        return if (success) {
-            Pair(true, savedPath)
+        return if (savedPaths.isNotEmpty()) {
+            Pair(true, savedPaths.first())
         } else {
             Pair(false, "Não foi possível gravar na pasta 'Agenda H'. Verifique as permissões de armazenamento.")
         }
@@ -110,6 +115,9 @@ object AgendaHFolderManager {
     fun readBackupFromAgendaH(context: Context): Pair<String?, String> {
         val candidates = getCandidateDirs(context)
         val fileNames = listOf("agenda_backup.json", "agenda_h_backup.json", "backup.json", "agenda_backup_auto.json")
+        var bestContent: String? = null
+        var bestPath = ""
+        var newestTime: Long = -1
 
         for (dir in candidates) {
             if (dir.exists() && dir.isDirectory) {
@@ -117,9 +125,14 @@ object AgendaHFolderManager {
                     val file = File(dir, name)
                     if (file.exists() && file.length() > 0) {
                         try {
+                            val mod = file.lastModified()
                             val content = file.readText(Charsets.UTF_8)
-                            if (content.isNotBlank()) {
-                                return Pair(content, file.absolutePath)
+                            if (content.isNotBlank() && (content.contains("partners") || content.contains("encounters") || content.contains("mulheres"))) {
+                                if (mod > newestTime) {
+                                    newestTime = mod
+                                    bestContent = content
+                                    bestPath = file.absolutePath
+                                }
                             }
                         } catch (_: Exception) {}
                     }
@@ -129,11 +142,17 @@ object AgendaHFolderManager {
                 try {
                     val jsonFiles = dir.listFiles { f -> f.extension.equals("json", ignoreCase = true) }
                     if (!jsonFiles.isNullOrEmpty()) {
-                        val latest = jsonFiles.maxByOrNull { it.lastModified() }
-                        if (latest != null && latest.length() > 0) {
-                            val content = latest.readText(Charsets.UTF_8)
-                            if (content.isNotBlank()) {
-                                return Pair(content, latest.absolutePath)
+                        for (file in jsonFiles) {
+                            if (file.length() > 0) {
+                                val mod = file.lastModified()
+                                if (mod > newestTime) {
+                                    val content = file.readText(Charsets.UTF_8)
+                                    if (content.isNotBlank() && (content.contains("partners") || content.contains("encounters") || content.contains("mulheres"))) {
+                                        newestTime = mod
+                                        bestContent = content
+                                        bestPath = file.absolutePath
+                                    }
+                                }
                             }
                         }
                     }
@@ -141,6 +160,10 @@ object AgendaHFolderManager {
             }
         }
 
-        return Pair(null, "Nenhum arquivo de backup (.json) encontrado na pasta 'Agenda H'.")
+        return if (bestContent != null) {
+            Pair(bestContent, bestPath)
+        } else {
+            Pair(null, "Nenhum arquivo de backup (.json) encontrado na pasta 'Agenda H'.")
+        }
     }
 }

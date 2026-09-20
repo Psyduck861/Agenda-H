@@ -4923,7 +4923,7 @@ fun EditEncontroDialog(
 @Composable
 fun DateSuggestionsScreen(viewModel: AgendaViewModel) {
     var selectedLocationFilter by remember { mutableStateOf("Minha localização") }
-    var selectedCategory by remember { mutableStateOf("Date Barato") }
+    var selectedCategory by remember { mutableStateOf("Motel") }
     var selectedSubCategory by remember { mutableStateOf<String?>(null) }
 
     val textColor = if (viewModel.isDarkTheme) OnSurfaceGold else Color(0xFF4A3416)
@@ -4943,8 +4943,10 @@ fun DateSuggestionsScreen(viewModel: AgendaViewModel) {
         }
     }
 
-    // Coordinates or simulated GPS location
-    var myCurrentGPSByWaze by remember { mutableStateOf("Campinas, SP") }
+    // Coordinates or GPS location (syncs with ViewModel)
+    var myCurrentGPSByWaze by remember(viewModel.userGpsAddress) { 
+        mutableStateOf(if (viewModel.userGpsAddress.isNotBlank()) viewModel.userGpsAddress else "Campinas, SP") 
+    }
     var showGPSModifierDialog by remember { mutableStateOf(false) }
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(
@@ -4960,6 +4962,7 @@ fun DateSuggestionsScreen(viewModel: AgendaViewModel) {
                     mode = selectedLocationFilter,
                     partnerId = selectedWoman?.id?.toString(),
                     category = selectedCategory,
+                    subCategory = selectedSubCategory,
                     radiusInMeters = 7000
                 )
             }
@@ -4984,6 +4987,7 @@ fun DateSuggestionsScreen(viewModel: AgendaViewModel) {
                     mode = selectedLocationFilter,
                     partnerId = selectedWoman?.id?.toString(),
                     category = selectedCategory,
+                    subCategory = selectedSubCategory,
                     radiusInMeters = 7000
                 )
             }
@@ -5006,11 +5010,12 @@ fun DateSuggestionsScreen(viewModel: AgendaViewModel) {
     }
 
     // Dynamic fetch triggered on selection changes with strict 7km radius
-    LaunchedEffect(selectedLocationFilter, selectedWoman, selectedCategory) {
+    LaunchedEffect(selectedLocationFilter, selectedWoman, selectedCategory, selectedSubCategory, viewModel.userGpsLatitude, viewModel.userGpsLongitude, viewModel.userGpsAddress) {
         viewModel.loadNearbySuggestions(
             mode = selectedLocationFilter,
             partnerId = selectedWoman?.id?.toString(),
             category = selectedCategory,
+            subCategory = selectedSubCategory,
             radiusInMeters = 7000
         )
     }
@@ -5019,16 +5024,16 @@ fun DateSuggestionsScreen(viewModel: AgendaViewModel) {
     val isLoadingSuggestions by viewModel.isLoadingSuggestions.collectAsStateWithLifecycle()
 
     // Dynamic resolution of city and reference address for calculations
-    val (locationAddress, myGPSLocation) = remember(selectedLocationFilter, selectedWoman, myCurrentGPSByWaze) {
-        val gps = myCurrentGPSByWaze
+    val (locationAddress, myGPSLocation) = remember(selectedLocationFilter, selectedWoman, myCurrentGPSByWaze, viewModel.userGpsAddress) {
+        val gps = if (viewModel.userGpsAddress.isNotBlank()) viewModel.userGpsAddress else myCurrentGPSByWaze
         val addr = when (selectedLocationFilter) {
             "Minha localização" -> gps
             "Casa dela" -> {
                 val wom = selectedWoman
-                if (wom != null && wom.address.isNotEmpty()) {
+                if (wom != null && wom.address.isNotBlank()) {
                     wom.address
                 } else {
-                    "Campinas, SP"
+                    gps
                 }
             }
             else -> gps
@@ -5044,33 +5049,152 @@ fun DateSuggestionsScreen(viewModel: AgendaViewModel) {
             .padding(bottom = 8.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Title
+        // Title and Gemini Status Pill
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "📍 Sugestão de Date",
+                color = textColor,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            // Gemini API Status Pill
+            val apiBadgeColor = when (viewModel.apiKeyStatus) {
+                "CONNECTED" -> Color(0xFF4CAF50)
+                "TESTING" -> PrimaryGold
+                else -> Color(0xFFEF5350)
+            }
+            val apiBadgeText = when (viewModel.apiKeyStatus) {
+                "CONNECTED" -> "✨ Gemini: ✅ Ativa"
+                "TESTING" -> "✨ Gemini: ⏳ Conectando..."
+                else -> "✨ Gemini: ⚠️ Verificar"
+            }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(100.dp))
+                    .background(apiBadgeColor.copy(alpha = 0.12f))
+                    .border(1.dp, apiBadgeColor.copy(alpha = 0.4f), RoundedCornerShape(100.dp))
+                    .clickable { showGPSModifierDialog = false /* focus */ }
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            ) {
                 Text(
-                    text = "📍 Sugestão de Date",
-                    color = textColor,
-                    fontSize = 20.sp,
+                    text = apiBadgeText,
+                    color = apiBadgeColor,
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
-            
-            // tiny click to simulate changing user GPS
-            Text(
-                text = "GPS: $myGPSLocation ⚙️",
-                color = PrimaryGold,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(PrimaryGold.copy(alpha = 0.1f))
-                    .clickable { showGPSModifierDialog = true }
-                    .padding(horizontal = 6.dp, vertical = 4.dp)
-            )
+        }
+
+        // Dedicated Location Card (Minha Localização / Casa Dela) with Manual Override
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = cardColor),
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, PrimaryGold.copy(alpha = 0.3f))
+        ) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (selectedLocationFilter == "Minha localização") "📍 MINHA LOCALIZAÇÃO ATUAL" else "🏠 ENDEREÇO DA MULHER",
+                        color = PrimaryGold,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    )
+                    Text(
+                        text = "Raio máx: 7 km",
+                        color = Color(0xFF4CAF50),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                if (selectedLocationFilter == "Minha localização") {
+                    val activeLoc = if (viewModel.userGpsAddress.isNotBlank()) viewModel.userGpsAddress else viewModel.userManualAddress
+                    val isManual = viewModel.isManualLocationMode
+                    Text(
+                        text = activeLoc,
+                        color = textColor,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = if (isManual) "✏️ Modo: Localização manual cadastrada pelo usuário" else "🛰️ Modo: GPS do celular",
+                        color = textVariantColor,
+                        fontSize = 11.sp
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                requestAutomaticGPSLocationDetailed(context) { name, lat, lng ->
+                                    viewModel.updateUserGps(lat, lng, name)
+                                    viewModel.loadNearbySuggestions(
+                                        mode = selectedLocationFilter,
+                                        partnerId = selectedWoman?.id?.toString(),
+                                        category = selectedCategory,
+                                        radiusInMeters = 7000
+                                    )
+                                    Toast.makeText(context, "GPS atualizado: $name", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryGold.copy(alpha = 0.15f), contentColor = PrimaryGold),
+                            border = BorderStroke(1.dp, PrimaryGold.copy(alpha = 0.4f)),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f).height(36.dp),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text("🛰️ Obter do GPS", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = { showGPSModifierDialog = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryGold, contentColor = OnPrimaryGold),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1.2f).height(36.dp),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text("✏️ Cadastrar Manualmente", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                } else {
+                    // Casa dela
+                    val wom = selectedWoman
+                    if (wom != null) {
+                        Text(
+                            text = "${wom.name} • ${wom.address.ifBlank { "Sem endereço cadastrado" }}",
+                            color = textColor,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (wom.address.isBlank()) {
+                            Text(
+                                text = "⚠️ A ficha desta mulher está sem endereço. O app usará sua localização como referência ou você pode editar a ficha dela.",
+                                color = Color(0xFFEF5350),
+                                fontSize = 11.sp
+                            )
+                        }
+                    } else {
+                        Text(
+                            text = "Nenhuma mulher selecionada.",
+                            color = textVariantColor,
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+            }
         }
 
         if (showGPSModifierDialog) {
@@ -5078,17 +5202,34 @@ fun DateSuggestionsScreen(viewModel: AgendaViewModel) {
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                     colors = CardDefaults.cardColors(containerColor = cardColor),
-                    border = BorderStroke(1.dp, PrimaryGold)
+                    border = BorderStroke(1.5.dp, PrimaryGold),
+                    shape = RoundedCornerShape(16.dp)
                 ) {
-                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("Simular Localização GPS do Celular", color = textColor, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                        var tempGpsText by remember { mutableStateOf(myCurrentGPSByWaze) }
+                    Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Text(
+                            "📍 Cadastrar Minha Localização Atual",
+                            color = PrimaryGold,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "Digite sua cidade, bairro ou rua atual (ex: 'Campinas, SP', 'Vila Madalena, São Paulo', 'Centro, Santos'). A API do Gemini buscará locais estritamente a menos de 7 km deste ponto.",
+                            color = textVariantColor,
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp
+                        )
+                        var manualInputText by remember { mutableStateOf(viewModel.userManualAddress) }
                         OutlinedTextField(
-                            value = tempGpsText,
-                            onValueChange = { tempGpsText = it },
-                            label = { Text("Cidade / Bairro do GPS", fontSize = 11.sp) },
+                            value = manualInputText,
+                            onValueChange = { manualInputText = it },
+                            label = { Text("Minha Localização (Rua, Bairro, Cidade)", fontSize = 12.sp) },
                             modifier = Modifier.fillMaxWidth(),
-                            colors = OutlinedTextFieldDefaults.colors(focusedTextColor = textColor, unfocusedTextColor = textColor, focusedBorderColor = PrimaryGold)
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = textColor,
+                                unfocusedTextColor = textColor,
+                                focusedBorderColor = PrimaryGold
+                            ),
+                            singleLine = true
                         )
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             TextButton(onClick = { showGPSModifierDialog = false }) {
@@ -5097,14 +5238,22 @@ fun DateSuggestionsScreen(viewModel: AgendaViewModel) {
                             Spacer(modifier = Modifier.width(8.dp))
                             Button(
                                 onClick = {
-                                    if (tempGpsText.isNotEmpty()) {
-                                        myCurrentGPSByWaze = tempGpsText
+                                    if (manualInputText.isNotBlank()) {
+                                        viewModel.setManualLocation(manualInputText)
+                                        viewModel.loadNearbySuggestions(
+                                            mode = selectedLocationFilter,
+                                            partnerId = selectedWoman?.id?.toString(),
+                                            category = selectedCategory,
+                                            radiusInMeters = 7000
+                                        )
+                                        Toast.makeText(context, "Localização salva: ${manualInputText.trim()}", Toast.LENGTH_SHORT).show()
                                     }
                                     showGPSModifierDialog = false
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = PrimaryGold, contentColor = OnPrimaryGold)
+                                colors = ButtonDefaults.buttonColors(containerColor = PrimaryGold, contentColor = OnPrimaryGold),
+                                shape = RoundedCornerShape(8.dp)
                             ) {
-                                Text("Salvar")
+                                Text("Salvar & Buscar Locais")
                             }
                         }
                     }
@@ -5249,26 +5398,8 @@ fun DateSuggestionsScreen(viewModel: AgendaViewModel) {
             }
         }
 
-        // Custom Category Grid mapping: Date Barato, Ostentação, Motel, Shopping (2x2 Layout as shown in the print)
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            CategoryGridCard(
-                label = "Date Barato",
-                icon = "🍺",
-                isSelected = selectedCategory == "Date Barato",
-                onClick = { selectedCategory = "Date Barato"; selectedSubCategory = null },
-                modifier = Modifier.weight(1f),
-                viewModel = viewModel
-            )
-            CategoryGridCard(
-                label = "Ostentação",
-                icon = "💎",
-                isSelected = selectedCategory == "Ostentação",
-                onClick = { selectedCategory = "Ostentação"; selectedSubCategory = null },
-                modifier = Modifier.weight(1f),
-                viewModel = viewModel
-            )
-        }
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        // Categorias solicitadas: Motel, Parques, Bar/Lanches, Restaurante, Shoppings
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             CategoryGridCard(
                 label = "Motel",
                 icon = "🏩",
@@ -5278,27 +5409,122 @@ fun DateSuggestionsScreen(viewModel: AgendaViewModel) {
                 viewModel = viewModel
             )
             CategoryGridCard(
-                label = "Shopping",
+                label = "Parques",
+                icon = "🌳",
+                isSelected = selectedCategory == "Parques",
+                onClick = { selectedCategory = "Parques"; selectedSubCategory = null },
+                modifier = Modifier.weight(1f),
+                viewModel = viewModel
+            )
+            CategoryGridCard(
+                label = "Shoppings",
                 icon = "🛍️",
-                isSelected = selectedCategory == "Shopping",
-                onClick = { selectedCategory = "Shopping"; selectedSubCategory = null },
+                isSelected = selectedCategory == "Shoppings",
+                onClick = { selectedCategory = "Shoppings"; selectedSubCategory = null },
+                modifier = Modifier.weight(1f),
+                viewModel = viewModel
+            )
+        }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            CategoryGridCard(
+                label = "Bar/Lanches",
+                icon = "🍔",
+                isSelected = selectedCategory == "Bar/Lanches",
+                onClick = { selectedCategory = "Bar/Lanches"; selectedSubCategory = null },
+                modifier = Modifier.weight(1f),
+                viewModel = viewModel
+            )
+            CategoryGridCard(
+                label = "Restaurante",
+                icon = "🍽️",
+                isSelected = selectedCategory == "Restaurante",
+                onClick = { selectedCategory = "Restaurante"; selectedSubCategory = null },
                 modifier = Modifier.weight(1f),
                 viewModel = viewModel
             )
         }
 
+        // Subcategorias solicitadas para cada categoria
+        val subCategories = when (selectedCategory) {
+            "Motel" -> listOf(
+                Pair("💵 Barato / Econômico", "💵"),
+                Pair("💎 Ostentação / Luxo", "💎"),
+                Pair("🛁 Com Hidro / Ofurô", "🛁"),
+                Pair("🌹 Suíte Temática", "🌹")
+            )
+            "Parques" -> listOf(
+                Pair("🌳 Bosque & Natureza", "🌳"),
+                Pair("🏃 Pista & Orla", "🏃"),
+                Pair("🌊 Lago & Represa", "🌊"),
+                Pair("🌺 Jardim Botânico", "🌺")
+            )
+            "Bar/Lanches" -> listOf(
+                Pair("🍔 Hamburgueria", "🍔"),
+                Pair("🍺 Bar & Boteco", "🍺"),
+                Pair("🍸 Drinks & Coquetelaria", "🍸"),
+                Pair("🍣 Sushi & Petiscos", "🍣"),
+                Pair("☕ Cafeteria & Doceria", "☕")
+            )
+            "Restaurante" -> listOf(
+                Pair("🕯️ Romântico a Dois", "🕯️"),
+                Pair("🍝 Italiano & Massas", "🍝"),
+                Pair("🍱 Japonês Premium", "🍱"),
+                Pair("🥩 Churrascaria & Carnes", "🥩"),
+                Pair("🥂 Alta Gastronomia", "🥂")
+            )
+            else -> listOf( // "Shoppings"
+                Pair("🛍️ Shopping Center", "🛍️"),
+                Pair("🎬 Cinema", "🎬"),
+                Pair("🍨 Sorveteria & Gelato", "🍨"),
+                Pair("🎳 Boliche & Jogos", "🎳")
+            )
+        }
+
+        androidx.compose.foundation.lazy.LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            item {
+                FilterChip(
+                    selected = selectedSubCategory == null,
+                    onClick = { selectedSubCategory = null },
+                    label = { Text("✨ Todos", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = PrimaryGold,
+                        selectedLabelColor = OnPrimaryGold,
+                        containerColor = cardColor,
+                        labelColor = textColor
+                    )
+                )
+            }
+            items(subCategories.size) { idx ->
+                val (subName, _) = subCategories[idx]
+                FilterChip(
+                    selected = selectedSubCategory == subName,
+                    onClick = { selectedSubCategory = if (selectedSubCategory == subName) null else subName },
+                    label = { Text(subName, fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = PrimaryGold,
+                        selectedLabelColor = OnPrimaryGold,
+                        containerColor = cardColor,
+                        labelColor = textColor
+                    )
+                )
+            }
+        }
+
         // Location descriptor banner
         val descriptionLabel = when (selectedLocationFilter) {
-            "Minha localização" -> "📍 Próximo à sua localização atual"
+            "Minha localização" -> "📍 Próximo à sua localização atual ($locationAddress)"
             "Casa dela" -> "🏠 Próximo à casa dela (${selectedWoman?.name ?: "Nenhuma selecionada"})"
             else -> "↔️ No meio do caminho"
         }
 
         Card(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = cardColor.copy(alpha = 0.5f)),
+            colors = CardDefaults.cardColors(containerColor = cardColor.copy(alpha = 0.6f)),
             shape = RoundedCornerShape(8.dp),
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.05f))
+            border = BorderStroke(1.dp, PrimaryGold.copy(alpha = 0.2f))
         ) {
             Row(
                 modifier = Modifier.padding(10.dp),
@@ -5308,366 +5534,234 @@ fun DateSuggestionsScreen(viewModel: AgendaViewModel) {
                     text = descriptionLabel,
                     color = textColor,
                     fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
                 )
-                if (selectedLocationFilter != "Minha localização" && selectedWoman != null && selectedWoman!!.address.isNotEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Color(0xFF4CAF50).copy(alpha = 0.15f))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Text("Raio máx 7 km", color = Color(0xFF4CAF50), fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        // Section Title
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "🔎 LOCAIS REAIS ENCONTRADOS (${nearbySuggestions.size})",
+                color = PrimaryGold,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp
+            )
+            Text(
+                text = "Base Cartográfica Oficial",
+                color = textVariantColor,
+                fontSize = 9.sp
+            )
+        }
+
+        val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+
+        if (isLoadingSuggestions) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = cardColor),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, PrimaryGold.copy(alpha = 0.2f))
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(20.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(color = PrimaryGold, modifier = Modifier.size(24.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text("Buscando estabelecimentos reais com precisão cartográfica...", color = textColor, fontSize = 12.sp)
+                }
+            }
+        } else if (nearbySuggestions.isEmpty()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = cardColor),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.05f))
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("📍", fontSize = 28.sp)
                     Text(
-                        text = " • ${selectedWoman!!.address}",
+                        "Nenhum estabelecimento encontrado nesta categoria a até 7 km de '$locationAddress'.",
+                        color = textColor,
+                        fontSize = 12.sp,
+                        textAlign = TextAlign.Center
+                    )
+                    Text(
+                        "Tente selecionar '✨ Todos' ou trocar a categoria acima para ver locais próximos.",
                         color = textVariantColor,
                         fontSize = 11.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        textAlign = TextAlign.Center
                     )
                 }
             }
-        }
-
-        // Subcategory list items
-        val subCategories = when (selectedCategory) {
-            "Date Barato" -> listOf(
-                Pair("☕ Café / Restaurante", "☕"),
-                Pair("🍔 Hamburgueria", "🍔"),
-                Pair("🌳 Parque público", "🌳"),
-                Pair("🍺 Bar", "🍺")
-            )
-            "Ostentação" -> listOf(
-                Pair("🥂 Restaurante fino", "🥂"),
-                Pair("🍱 Japonês premium", "🍱"),
-                Pair("🌃 Rooftop bar", "🌃"),
-                Pair("🏨 Hotel boutique", "🏨")
-            )
-            "Motel" -> listOf(
-                Pair("🏩 Motel Premium", "🏩"),
-                Pair("💵 Motel Barato", "💵"),
-                Pair("🛁 Motel com ofurô", "🛁"),
-                Pair("🌹 Suíte temática", "🌹")
-            )
-            else -> listOf( // "Shopping"
-                Pair("🎬 Cinema", "🎬"),
-                Pair("🛍️ Shopping center", "🛍️"),
-                Pair("🎮 Arcade / Boliche", "🎮"),
-                Pair("🍧 Sorveteria", "🍧")
-            )
-        }
-
-        // --- CONSULTORIA ESTRATÉGICA DE DATE COM GEMINI FLASH-LATEST ---
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(1.dp, PrimaryGold.copy(alpha = 0.35f), RoundedCornerShape(16.dp)),
-            colors = CardDefaults.cardColors(containerColor = cardColor),
-            shape = RoundedCornerShape(16.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                nearbySuggestions.forEach { place ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = cardColor),
+                        border = BorderStroke(1.dp, PrimaryGold.copy(alpha = 0.25f)),
+                        shape = RoundedCornerShape(12.dp)
                     ) {
-                        Text(text = "✨", fontSize = 18.sp)
-                        Column {
-                            Text(
-                                text = "Estrategista de Date IA",
-                                color = textColor,
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "Google Gemini flash-latest • Raio até 7km",
-                                color = PrimaryGold,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                    }
-                }
-
-                Text(
-                    text = "Gera um roteiro de date personalizado em até 7km de $selectedLocationFilter, com sugestões de locais, 2 opções de convite para WhatsApp, gatilhos de conversa e táticas de escalada.",
-                    color = textVariantColor.copy(alpha = 0.8f),
-                    fontSize = 12.sp,
-                    lineHeight = 16.sp
-                )
-
-                Button(
-                    onClick = {
-                        viewModel.generateSmartDateWithGemini(
-                            woman = selectedWoman,
-                            locationMode = selectedLocationFilter,
-                            category = selectedCategory,
-                            nearbyPlaces = nearbySuggestions
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth().height(46.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryGold, contentColor = OnPrimaryGold),
-                    shape = RoundedCornerShape(10.dp),
-                    enabled = !viewModel.isSmartDateAiLoading
-                ) {
-                    if (viewModel.isSmartDateAiLoading) {
-                        CircularProgressIndicator(
-                            color = OnPrimaryGold,
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.dp
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = "Consultando Gemini flash-latest...",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp
-                        )
-                    } else {
-                        Icon(imageVector = Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = if (viewModel.smartDateAiResult.isEmpty()) "Gerar Estratégia de Date com Gemini" else "Atualizar Estratégia com Gemini",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp
-                        )
-                    }
-                }
-
-                if (viewModel.smartDateAiResult.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(Color.Black.copy(alpha = 0.25f))
-                            .border(1.dp, PrimaryGold.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
-                            .padding(14.dp)
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(modifier = Modifier.padding(14.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                verticalAlignment = Alignment.Top
                             ) {
-                                Text(
-                                    text = "💡 Roteiro Estratégico Sugerido:",
-                                    color = PrimaryGold,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                TextButton(
-                                    onClick = {
-                                        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
-                                        val clip = android.content.ClipData.newPlainText("Estratégia de Date Gemini", viewModel.smartDateAiResult)
-                                        clipboard?.setPrimaryClip(clip)
-                                        Toast.makeText(context, "Roteiro copiado para a área de transferência!", Toast.LENGTH_SHORT).show()
-                                    },
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                                ) {
-                                    Text("📋 Copiar", color = PrimaryGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = place.name,
+                                        color = textColor,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = place.category,
+                                            color = PrimaryGold,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = "• Faixa: ${place.priceBracket}",
+                                            color = textVariantColor,
+                                            fontSize = 10.sp
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column(horizontalAlignment = Alignment.End) {
+                                    val distLabel = when (selectedLocationFilter) {
+                                        "Minha localização" -> "A %.1f km de você".format(java.util.Locale.US, place.distanceInKm)
+                                        "Casa dela" -> "A %.1f km da casa de %s".format(java.util.Locale.US, place.distanceInKm, selectedWoman?.name ?: "dela")
+                                        else -> "A %.1f km do meio do caminho".format(java.util.Locale.US, place.distanceInKm)
+                                    }
+                                    Text(
+                                        text = distLabel,
+                                        color = Color(0xFF4CAF50),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(modifier = Modifier.height(3.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(PrimaryGold.copy(alpha = 0.12f))
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Text(text = "${place.rating} ⭐", color = PrimaryGold, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                    }
                                 }
                             }
 
-                            Text(
-                                text = viewModel.smartDateAiResult,
-                                color = textColor,
-                                fontSize = 12.sp,
-                                lineHeight = 18.sp
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            subCategories.forEach { (subName, emoji) ->
-                val isExpanded = selectedSubCategory == subName
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(
-                            1.dp,
-                            if (isExpanded) PrimaryGold.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.05f),
-                            RoundedCornerShape(12.dp)
-                        )
-                        .clickable {
-                            selectedSubCategory = if (isExpanded) null else subName
-                        },
-                    colors = CardDefaults.cardColors(containerColor = cardColor),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = subName,
-                                color = textColor,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            
-                            // Indicator icon
-                            Icon(
-                                imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                contentDescription = if (isExpanded) "Recolher" else "Expandir",
-                                tint = PrimaryGold,
-                                modifier = Modifier.size(24.dp)
-                            )
-                        }
-
-                        // Specific listings relation from selected location
-                        if (isExpanded) {
-                            Spacer(modifier = Modifier.height(10.dp))
-                            HorizontalDivider(color = Color.White.copy(alpha = 0.1f), thickness = 0.5.dp)
                             Spacer(modifier = Modifier.height(8.dp))
-                            
-                            Text(
-                                text = "🔎 Lugares Recomendados (API de Geolocalização):",
-                                color = PrimaryGold,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(bottom = 6.dp)
-                            )
+                            // Real address banner
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color.Black.copy(alpha = 0.2f))
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "🏢 ${place.address}",
+                                    color = textVariantColor,
+                                    fontSize = 10.sp,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Copiar",
+                                    color = PrimaryGold,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.clickable {
+                                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(place.address))
+                                        android.widget.Toast.makeText(context, "Endereço copiado!", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                )
+                            }
 
-                            if (isLoadingSuggestions) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
-                                    horizontalArrangement = Arrangement.Center,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    CircularProgressIndicator(color = PrimaryGold, modifier = Modifier.size(24.dp))
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Text("Buscando no Google Places...", color = textVariantColor, fontSize = 12.sp)
-                                }
-                            } else {
-                                if (nearbySuggestions.isEmpty()) {
-                                    Text("Nenhum local encontrado nesta região para esta categoria.", color = textVariantColor, fontSize = 12.sp)
-                                } else {
-                                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        nearbySuggestions.forEach { place ->
-                                            Card(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.25f)),
-                                                border = BorderStroke(1.dp, PrimaryGold.copy(alpha = 0.15f)),
-                                                shape = RoundedCornerShape(10.dp)
-                                            ) {
-                                                Column(modifier = Modifier.padding(12.dp)) {
-                                                    Row(
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                                        verticalAlignment = Alignment.Top
-                                                    ) {
-                                                        Column(modifier = Modifier.weight(1f)) {
-                                                            Text(text = place.name, color = textColor, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                                                            Spacer(modifier = Modifier.height(2.dp))
-                                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                                                Text(
-                                                                    text = place.category,
-                                                                    color = PrimaryGold,
-                                                                    fontSize = 10.sp,
-                                                                    fontWeight = FontWeight.SemiBold
-                                                                )
-                                                                Text(
-                                                                    text = "• Faixa: ${place.priceBracket}",
-                                                                    color = textVariantColor,
-                                                                    fontSize = 10.sp
-                                                                )
-                                                            }
-                                                            Spacer(modifier = Modifier.height(4.dp))
-                                                            Text(
-                                                                text = place.address,
-                                                                color = textVariantColor.copy(alpha = 0.8f),
-                                                                fontSize = 9.sp,
-                                                                maxLines = 1,
-                                                                overflow = TextOverflow.Ellipsis
-                                                            )
-                                                        }
-                                                        Spacer(modifier = Modifier.width(8.dp))
-                                                        Column(horizontalAlignment = Alignment.End) {
-                                                            val distLabel = when (selectedLocationFilter) {
-                                                                "Minha localização" -> "A %.1f km de você".format(java.util.Locale.US, place.distanceInKm)
-                                                                "Casa dela" -> "A %.1f km da casa de %s".format(java.util.Locale.US, place.distanceInKm, selectedWoman?.name ?: "dela")
-                                                                else -> "A %.1f km do meio do caminho".format(java.util.Locale.US, place.distanceInKm)
-                                                            }
-                                                            Text(
-                                                                text = distLabel,
-                                                                color = Color(0xFF4CAF50),
-                                                                fontSize = 11.sp,
-                                                                fontWeight = FontWeight.Bold
-                                                            )
-                                                            Spacer(modifier = Modifier.height(4.dp))
-                                                            Box(
-                                                                modifier = Modifier
-                                                                    .clip(RoundedCornerShape(4.dp))
-                                                                    .background(PrimaryGold.copy(alpha = 0.12f))
-                                                                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                                                            ) {
-                                                                Text(text = "${place.rating} ⭐", color = PrimaryGold, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                                                            }
-                                                        }
-                                                    }
-
-                                                    Spacer(modifier = Modifier.height(10.dp))
-                                                    Row(
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                                    ) {
-                                                        Button(
-                                                            onClick = {
-                                                                val intentUri = Uri.parse("google.navigation:q=${place.latitude},${place.longitude}")
-                                                                val mapIntent = Intent(Intent.ACTION_VIEW, intentUri).apply {
-                                                                    setPackage("com.google.android.apps.maps")
-                                                                }
-                                                                try {
-                                                                    context.startActivity(mapIntent)
-                                                                } catch (e: Exception) {
-                                                                    val fallbackUri = Uri.parse("https://www.google.com/maps/search/?api=1&query=${place.latitude},${place.longitude}")
-                                                                    context.startActivity(Intent(Intent.ACTION_VIEW, fallbackUri))
-                                                                }
-                                                            },
-                                                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryGold, contentColor = OnPrimaryGold),
-                                                            shape = RoundedCornerShape(6.dp),
-                                                            modifier = Modifier.weight(1f).height(36.dp),
-                                                            contentPadding = PaddingValues(0.dp)
-                                                        ) {
-                                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                                Icon(imageVector = Icons.Default.Map, contentDescription = null, modifier = Modifier.size(14.dp))
-                                                                Text("Abrir no Google Maps", fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                                            }
-                                                        }
-
-                                                        Button(
-                                                            onClick = {
-                                                                val wazeUri = Uri.parse("waze://?ll=${place.latitude},${place.longitude}&navigate=yes")
-                                                                val wazeIntent = Intent(Intent.ACTION_VIEW, wazeUri)
-                                                                try {
-                                                                    context.startActivity(wazeIntent)
-                                                                } catch (e: Exception) {
-                                                                    val fallbackWazeUri = Uri.parse("https://waze.com/ul?ll=${place.latitude},${place.longitude}&navigate=yes")
-                                                                    context.startActivity(Intent(Intent.ACTION_VIEW, fallbackWazeUri))
-                                                                }
-                                                            },
-                                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00C1FF), contentColor = Color.White),
-                                                            shape = RoundedCornerShape(6.dp),
-                                                            modifier = Modifier.weight(1f).height(36.dp),
-                                                            contentPadding = PaddingValues(0.dp)
-                                                        ) {
-                                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                                Icon(imageVector = Icons.Default.Navigation, contentDescription = null, modifier = Modifier.size(14.dp))
-                                                                Text("Abrir no Waze", fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        val query = "${place.name}, ${place.address}"
+                                        val encodedQuery = Uri.encode(query)
+                                        val intentUri = Uri.parse("geo:${place.latitude},${place.longitude}?q=$encodedQuery")
+                                        val mapIntent = Intent(Intent.ACTION_VIEW, intentUri).apply {
+                                            setPackage("com.google.android.apps.maps")
                                         }
+                                        try {
+                                            context.startActivity(mapIntent)
+                                        } catch (e: Exception) {
+                                            val fallbackUri = Uri.parse("https://www.google.com/maps/search/?api=1&query=$encodedQuery")
+                                            context.startActivity(Intent(Intent.ACTION_VIEW, fallbackUri))
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryGold, contentColor = OnPrimaryGold),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.weight(1f).heightIn(min = 44.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Icon(imageVector = Icons.Default.Map, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Text("Abrir no Maps", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+
+                                Button(
+                                    onClick = {
+                                        val query = "${place.name}, ${place.address}"
+                                        val encodedQuery = Uri.encode(query)
+                                        val wazeUri = Uri.parse("waze://?ll=${place.latitude},${place.longitude}&navigate=yes")
+                                        val wazeIntent = Intent(Intent.ACTION_VIEW, wazeUri)
+                                        try {
+                                            context.startActivity(wazeIntent)
+                                        } catch (e: Exception) {
+                                            val fallbackWazeUri = Uri.parse("https://waze.com/ul?q=$encodedQuery&navigate=yes")
+                                            context.startActivity(Intent(Intent.ACTION_VIEW, fallbackWazeUri))
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00C1FF), contentColor = Color.White),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.weight(1f).heightIn(min = 44.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Icon(imageVector = Icons.Default.Navigation, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Text("Abrir no Waze", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
@@ -5740,269 +5834,354 @@ fun getRawVenueList(category: String, subCategory: String, locationFilter: Strin
         }
     }
 
-    return when (category) {
-        "Date Barato" -> {
+    val cat = category.lowercase().trim()
+    val sub = subCategory.lowercase().trim()
+
+    return when {
+        cat.contains("motel") -> {
             when {
-                subCategory.contains("Café") -> {
+                sub.contains("barat") || sub.contains("econ") -> {
                     if (city == "Campinas") {
                         listOf(
-                            Venue("Café Cambuí", "4.6 ⭐ (1.1k)", "R$ 20 - R$ 40", "R. Maria Monteiro, 1200 - Cambuí, Campinas"),
-                            Venue("Fran's Cafe Campinas", "4.1 ⭐ (850)", "R$ 15 - R$ 35", "R. Coronel Silva Teles, Cambuí, Campinas"),
-                            Venue("Starbucks Shopping Iguatemi", "4.3 ⭐ (2.3k)", "R$ 22 - R$ 45", "Av. Iguatemi, 777 - Vila Brandina, Campinas")
+                            Venue("Motel Champion", "4.3 ⭐ (950)", "R$ 90 - R$ 180", "R. Jacy Teixeira Camargo, 50 - Jardim do Lago, Campinas"),
+                            Venue("Motel Drops Campinas", "4.4 ⭐ (820)", "R$ 110 - R$ 220", "Rodovia Dom Pedro I, km 131, Campinas"),
+                            Venue("Motel Saville", "4.2 ⭐ (700)", "R$ 80 - R$ 160", "Av. John Boyd Dunlop, 1200 - Jardim Ipaussurama, Campinas")
                         )
                     } else if (city == "Santos") {
                         listOf(
-                            Venue("Café Carioca", "4.5 ⭐ (900)", "R$ 15 - R$ 30", "Praça Visconde de Mauá, 1 - Centro, Santos"),
-                            Venue("Revo Coffee", "4.7 ⭐ (1.5k)", "R$ 25 - R$ 50", "Av. Epitácio Pessoa, 737 - Ponta da Praia, Santos"),
-                            Venue("Geek Café", "4.4 ⭐ (420)", "R$ 20 - R$ 35", "R. Marcílio Dias, 12 - Gonzaga, Santos")
+                            Venue("Motel Sagitário", "4.3 ⭐ (850)", "R$ 100 - R$ 210", "Rodovia Anchieta, km 64, Santos"),
+                            Venue("Motel Skorpios", "4.1 ⭐ (620)", "R$ 90 - R$ 180", "Av. Nossa Senhora de Fátima, Santos")
                         )
                     } else {
                         listOf(
-                            Venue("Bella Paulista", "4.5 ⭐ (15k)", "R$ 25 - R$ 60", "Rua Haddock Lobo, 354 - Cerqueira César, São Paulo"),
-                            Venue("Fran's Cafe Paulista", "4.0 ⭐ (3.1k)", "R$ 15 - R$ 35", "Av. Paulista, 2200 - Bela Vista, São Paulo"),
-                            Venue("Coffee Lab", "4.7 ⭐ (8.2k)", "R$ 20 - R$ 50", "Rua Fradique Coutinho, 1340 - Pinheiros, São Paulo")
+                            Venue("Motel Tout", "4.3 ⭐ (2.1k)", "R$ 110 - R$ 230", "Av. dos Bandeirantes, 3990 - Campo Belo, São Paulo"),
+                            Venue("Motel Confidence", "4.2 ⭐ (1.5k)", "R$ 95 - R$ 190", "Av. Prof. Francisco Morato, 2500 - Caxingui, São Paulo")
                         )
                     }
                 }
-                subCategory.contains("Hamburgueria") -> {
+                sub.contains("ostenta") || sub.contains("luxo") || sub.contains("premium") -> {
                     if (city == "Campinas") {
                         listOf(
-                            Venue("Cabana Burger Cambuí", "4.6 ⭐ (3.2k)", "R$ 35 - R$ 65", "R. Dr. Guilherme da Silva, 400 - Cambuí, Campinas"),
-                            Venue("Bullguer Campinas", "4.4 ⭐ (1.8k)", "R$ 30 - R$ 55", "R. Coronel Silva Teles, Cambuí, Campinas"),
-                            Venue("Patties Campinas", "4.5 ⭐ (1.2k)", "R$ 25 - R$ 45", "R. Maria Monteiro, 800 - Cambuí, Campinas")
+                            Venue("Motel My Flowers Luxury", "4.5 ⭐ (1.3k)", "R$ 190 - R$ 450", "Rodovia Dom Pedro I, km 135, Campinas"),
+                            Venue("Prime Motel Campinas", "4.6 ⭐ (980)", "R$ 210 - R$ 490", "Rodovia Governador Adhemar Pereira de Barros, km 118, Campinas")
                         )
                     } else if (city == "Santos") {
                         listOf(
-                            Venue("Seven Burgers", "4.6 ⭐ (1.4k)", "R$ 35 - R$ 60", "R. Dr. Marcílio Dias, 46 - Gonzaga, Santos"),
-                            Venue("Madero Container Santos", "4.3 ⭐ (2.1k)", "R$ 45 - R$ 75", "Av. Vicente de Carvalho, Santos"),
-                            Venue("Bullguer Santos", "4.4 ⭐ (1.1k)", "R$ 30 - R$ 55", "Av. Conselheiro Nébias, 800 - Gonzaga, Santos")
+                            Venue("Motel Fantasy Santos", "4.5 ⭐ (910)", "R$ 180 - R$ 420", "Rodovia dos Imigrantes, Santos")
                         )
                     } else {
                         listOf(
-                            Venue("Patties Burger Jardins", "4.5 ⭐ (6.5k)", "R$ 25 - R$ 45", "Rua Professor Arthur Ramos, 795 - Pinheiros, São Paulo"),
-                            Venue("Cabana Burger Oscar Freire", "4.6 ⭐ (8.4k)", "R$ 35 - R$ 65", "Rua Oscar Freire, 560 - Cerqueira César, São Paulo"),
-                            Venue("Bullguer Vila Madalena", "4.4 ⭐ (4.1k)", "R$ 30 - R$ 55", "Rua Fradique Coutinho, 1136 - Vila Madalena, São Paulo")
+                            Venue("Motel Lush Ipiranga", "4.7 ⭐ (5.5k)", "R$ 220 - R$ 650", "Av. do Estado, 6116 - Ipiranga, São Paulo"),
+                            Venue("Motel Swing Itaim", "4.5 ⭐ (4.1k)", "R$ 200 - R$ 580", "Av. Pres. Juscelino Kubitschek, 300 - Itaim Bibi, São Paulo"),
+                            Venue("Motel Apple Barra Funda", "4.6 ⭐ (3.2k)", "R$ 190 - R$ 520", "R. Quirino dos Santos, 191 - Barra Funda, São Paulo")
                         )
                     }
                 }
-                subCategory.contains("Parque") -> {
+                sub.contains("hidro") || sub.contains("ofurô") -> {
                     if (city == "Campinas") {
                         listOf(
-                            Venue("Parque Taquaral (Lagoa)", "4.7 ⭐ (12k)", "Grátis", "Av. Dr. Heitor Penteado, Campinas"),
-                            Venue("Bosque dos Jequitibás", "4.4 ⭐ (6.5k)", "Grátis", "R. Cel. Quirino, 2 - Bosque, Campinas")
-                        )
-                    } else if (city == "Santos") {
-                        listOf(
-                            Venue("Emissário Submarino Santos", "4.6 ⭐ (5.1k)", "Grátis", "Av. Pres. Wilson - José Menino, Santos"),
-                            Venue("Jardim da Orla de Santos", "4.8 ⭐ (15k)", "Grátis", "Avenida Vicente de Carvalho - Orla, Santos")
+                            Venue("Motel My Flowers (Suíte Hidro Master)", "4.6 ⭐ (900)", "R$ 240 - R$ 480", "Rodovia Dom Pedro I, km 135, Campinas"),
+                            Venue("Motel Drops (Suíte Hidro SPA)", "4.5 ⭐ (750)", "R$ 200 - R$ 420", "Rodovia Dom Pedro I, km 131, Campinas")
                         )
                     } else {
                         listOf(
-                            Venue("Parque do Ibirapuera", "4.8 ⭐ (120k)", "Grátis", "Av. Pedro Álvares Cabral - Vila Mariana, São Paulo"),
-                            Venue("Parque do Povo", "4.7 ⭐ (12k)", "Grátis", "Av. Henrique Chamma, 420 - Itaim Bibi, São Paulo"),
-                            Venue("Parque Villa-Lobos", "4.6 ⭐ (45k)", "Grátis", "Av. Prof. Fonseca Rodrigues, 2001 - Alto de Pinheiros, São Paulo")
-                        )
-                    }
-                }
-                else -> { // Bar
-                    if (city == "Campinas") {
-                        listOf(
-                            Venue("Giovannetti Cambuí", "4.5 ⭐ (4.8k)", "R$ 40 - R$ 80", "R. Padre Almeida, 120 - Cambuí, Campinas"),
-                            Venue("Brexó Bar Campinas", "4.2 ⭐ (1.1k)", "R$ 35 - R$ 70", "R. Sampainho, 305 - Cambuí, Campinas")
-                        )
-                    } else if (city == "Santos") {
-                        listOf(
-                            Venue("Australiano Pub", "4.5 ⭐ (3k)", "R$ 40 - R$ 90", "Av. Dr. Epitácio Pessoa, 117 - Embaré, Santos"),
-                            Venue("Moby Dick", "4.2 ⭐ (2.4k)", "R$ 35 - R$ 80", "Av. Vicente de Carvalho, 30 - Boqueirão, Santos")
-                        )
-                    } else {
-                        listOf(
-                            Venue("Bar do Juarez Itaim", "4.4 ⭐ (5.6k)", "R$ 40 - R$ 80", "Av. Pres. Juscelino Kubitschek, 1164 - Itaim Bibi, São Paulo"),
-                            Venue("Boteco São Bento Vila Madalena", "4.3 ⭐ (4.8k)", "R$ 45 - R$ 90", "R. Mourato Coelho, 1060 - Vila Madalena, São Paulo"),
-                            Venue("Bar da Dr. Arnaldo", "4.5 ⭐ (2.3k)", "R$ 30 - R$ 60", "R. Dr. Arnaldo, 1200 - Sumaré, São Paulo")
-                        )
-                    }
-                }
-            }
-        }
-        "Ostentação" -> {
-            when {
-                subCategory.contains("Restaurante") -> {
-                    if (city == "Campinas") {
-                        listOf(
-                            Venue("D'Oliveira Restaurante", "4.7 ⭐ (1.3k)", "R$ 150 - R$ 300", "R. Sampaio Peixoto, Jardins, Campinas"),
-                            Venue("Bellini Ristorante", "4.6 ⭐ (2k)", "R$ 120 - R$ 250", "Av. José de Souza Campos, 425 - Cambuí, Campinas")
-                        )
-                    } else if (city == "Santos") {
-                        listOf(
-                            Venue("Restaurante Vista ao Mar", "4.6 ⭐ (1.5k)", "R$ 140 - R$ 280", "Av. Bartolomeu de Gusmão, 114 - Aparecida, Santos"),
-                            Venue("Terrazzo Al Mare", "4.5 ⭐ (850)", "R$ 130 - R$ 260", "Av. Almirante Saldanha da Gama, Boqueirão, Santos")
-                        )
-                    } else {
-                        listOf(
-                            Venue("Paris 6 Classique", "4.4 ⭐ (25k)", "R$ 90 - R$ 180", "Rua Haddock Lobo, 1240 - Cerqueira César, São Paulo"),
-                            Venue("Figueira Rubaiyat", "4.6 ⭐ (12k)", "R$ 180 - R$ 350", "Rua Haddock Lobo, 1730 - Jardins, São Paulo"),
-                            Venue("Terraço Itália", "4.5 ⭐ (8.5k)", "R$ 200 - R$ 450", "Av. Ipiranga, 344 - República, São Paulo")
-                        )
-                    }
-                }
-                subCategory.contains("Japonês") -> {
-                    if (city == "Campinas") {
-                        listOf(
-                            Venue("Kaizen Japanese Food", "4.7 ⭐ (2.4k)", "R$ 140 - R$ 280", "Av. Iguatemi, 101 - Vila Brandina, Campinas"),
-                            Venue("Sushi do Cambuí", "4.5 ⭐ (1.1k)", "R$ 110 - R$ 220", "R. Dr. Emílio Ribas, 200 - Cambuí, Campinas")
-                        )
-                    } else {
-                        listOf(
-                            Venue("Nakka Itaim Store", "4.6 ⭐ (3.1k)", "R$ 180 - R$ 350", "R. Pedroso Alvarenga, 1110 - Itaim Bibi, São Paulo"),
-                            Venue("Kosushi Shopping Cidade Jardim", "4.5 ⭐ (1.2k)", "R$ 200 - R$ 400", "Av. Magalhães de Castro, 12000 - São Paulo")
-                        )
-                    }
-                }
-                subCategory.contains("Rooftop") -> {
-                    if (city == "Campinas") {
-                        listOf(
-                            Venue("Rooftop Cambuí Lounge", "4.4 ⭐ (900)", "R$ 60 - R$ 120", "Av. Júlio de Mesquita, Cambuí, Campinas"),
-                            Venue("The Royal Palm Rooftop", "4.5 ⭐ (500)", "R$ 80 - R$ 150", "Royal Palm Plaza, Campinas")
-                        )
-                    } else {
-                        listOf(
-                            Venue("Skye Bar & Restaurante", "4.6 ⭐ (8.2k)", "R$ 90 - R$ 220", "R. Brigadeiro Luís Antônio, 4700 - Jardim Paulista, São Paulo"),
-                            Venue("Seen São Paulo", "4.5 ⭐ (3.6k)", "R$ 100 - R$ 250", "Seen, Alameda Santos, 1437 - Cerqueira César, São Paulo")
-                        )
-                    }
-                }
-                else -> { // Hotel
-                    if (city == "Campinas") {
-                        listOf(
-                            Venue("Radisson Red Campinas", "4.6 ⭐ (1.5k)", "R$ 450 - R$ 750", "Av. Júlio de Mesquita, 705 - Cambuí, Campinas"),
-                            Venue("Royal Palm Plaza Resort", "4.7 ⭐ (10k)", "R$ 800 - R$ 1500", "Av. Royal Palm Plaza, Campinas")
-                        )
-                    } else {
-                        listOf(
-                            Venue("Hotel Unique", "4.7 ⭐ (4.5k)", "R$ 1200 - R$ 2500", "Av. Brigadeiro Luís Antônio, 4700 - Jardim Paulista, São Paulo"),
-                            Venue("Hotel Fasano", "4.8 ⭐ (2.1k)", "R$ 2400 - R$ 4500", "R. Vitório Fasano, 88 - Cerqueira César, São Paulo")
-                        )
-                    }
-                }
-            }
-        }
-        "Motel" -> {
-            when {
-                subCategory.contains("Premium") -> {
-                    if (city == "Campinas") {
-                        listOf(
-                            Venue("Motel My Flowers Luxury", "4.4 ⭐ (1.1k)", "R$ 160 - R$ 380", "Rodovia Dom Pedro I, km 135, Campinas"),
-                            Venue("Motel Champion", "4.3 ⭐ (950)", "R$ 140 - R$ 320", "R. Jacy Teixeira Camargo, 50 - Campinas")
-                        )
-                    } else if (city == "Santos") {
-                        listOf(
-                            Venue("Motel Sagitário", "4.3 ⭐ (850)", "R$ 130 - R$ 300", "Rodovia Anchieta, Santos")
-                        )
-                    } else {
-                        listOf(
-                            Venue("Motel Lush Ipiranga", "4.6 ⭐ (5.1k)", "R$ 180 - R$ 490", "Av. do Estado, 6116 - Ipiranga, São Paulo"),
-                            Venue("Motel Swing Itaim", "4.4 ⭐ (3.8k)", "R$ 160 - R$ 420", "Av. Pres. Juscelino Kubitschek, 300 - Itaim Bibi, São Paulo"),
-                            Venue("Motel Apple Barra Funda", "4.5 ⭐ (2.9k)", "R$ 150 - R$ 390", "R. Quirino dos Santos, 191 - Barra Funda, São Paulo")
-                        )
-                    }
-                }
-                subCategory.contains("Barato") -> {
-                    if (city == "Campinas") {
-                        listOf(
-                            Venue("Motel Seqüellas Campinas", "3.9 ⭐ (420)", "R$ 70 - R$ 130", "Av. Ruy Rodriguez, 1200 - Campinas"),
-                            Venue("Motel Playtime", "3.8 ⭐ (600)", "R$ 75 - R$ 140", "Rodovia Campinas-Mogi Mirim, km 112, Campinas")
-                        )
-                    } else if (city == "Santos") {
-                        listOf(
-                            Venue("Motel Miramar", "3.8 ⭐ (350)", "R$ 70 - R$ 120", "Av. Presidente Wilson, Santos")
-                        )
-                    } else {
-                        listOf(
-                            Venue("Motel Seqüellas Anália", "3.9 ⭐ (850)", "R$ 75 - R$ 130", "Av. Salim Farah Maluf, 3100 - Tatuapé, São Paulo"),
-                            Venue("Motel Coliseu Centro", "3.8 ⭐ (620)", "R$ 65 - R$ 110", "Rua da Consolação, 300 - Centro, São Paulo"),
-                            Venue("Motel Passport", "4.0 ⭐ (1.1k)", "R$ 80 - R$ 150", "Av. do State, 4800 - São Paulo")
-                        )
-                    }
-                }
-                subCategory.contains("ofurô") -> {
-                    if (city == "Campinas") {
-                        listOf(
-                            Venue("Motel My Flowers Spa Ofurô", "4.6 ⭐ (1.4k)", "R$ 220 - R$ 450", "Rodovia Dom Pedro I, km 135, Campinas"),
-                            Venue("Motel Premium Campinas Spa", "4.4 ⭐ (820)", "R$ 190 - R$ 390", "Rodovia Zeferino Vaz, Campinas")
-                        )
-                    } else {
-                        listOf(
-                            Venue("Motel Lush Spa & Ofurô", "4.7 ⭐ (4.3k)", "R$ 260 - R$ 580", "Av. do Estado, 6116 - Ipiranga, São Paulo"),
-                            Venue("Motel Acaso Premium Romana", "4.5 ⭐ (2.5k)", "R$ 230 - R$ 480", "Av. Salim Farah Maluf, 6000 - Mooca, São Paulo")
+                            Venue("Motel Lush Spa & Ofurô", "4.8 ⭐ (4.8k)", "R$ 280 - R$ 680", "Av. do Estado, 6116 - Ipiranga, São Paulo"),
+                            Venue("Motel Acaso Premium Romana", "4.6 ⭐ (2.8k)", "R$ 250 - R$ 540", "Av. Salim Farah Maluf, 6000 - Mooca, São Paulo")
                         )
                     }
                 }
                 else -> { // Temática
                     if (city == "Campinas") {
                         listOf(
-                            Venue("Motel Flowers 50 Tons", "4.5 ⭐ (1.1k)", "R$ 240 - R$ 500", "Rodovia Dom Pedro I, Campinas")
+                            Venue("Motel Flowers 50 Tons", "4.5 ⭐ (1.1k)", "R$ 240 - R$ 500", "Rodovia Dom Pedro I, km 135, Campinas")
                         )
                     } else {
                         listOf(
                             Venue("Motel Lush (Suíte Cine Privé)", "4.7 ⭐ (3k)", "R$ 280 - R$ 620", "Av. do Estado, 6116 - Ipiranga, São Paulo"),
-                            Venue("Motel Play Medieval & Pole", "4.3 ⭐ (1.2k)", "R$ 180 - R$ 380", "Marginal Pinheiros, São Paulo")
+                            Venue("Motel Play Medieval & Pole", "4.4 ⭐ (1.4k)", "R$ 190 - R$ 410", "Marginal Pinheiros, São Paulo")
                         )
                     }
                 }
             }
         }
-        else -> { // Shopping
+        cat.contains("parque") -> {
             when {
-                subCategory.contains("Cinema") -> {
+                sub.contains("bosque") || sub.contains("natureza") -> {
                     if (city == "Campinas") {
                         listOf(
-                            Venue("Cinépolis VIP Shopping P. Dom Pedro", "4.6 ⭐ (3.5k)", "R$ 45 - R$ 90", "Av. Guilherme Campos, 500 - Campinas"),
-                            Venue("Kinoplex Iguatemi Campinas", "4.4 ⭐ (2.8k)", "R$ 30 - R$ 65", "Av. Iguatemi, 777 - Campinas")
+                            Venue("Bosque dos Jequitibás", "4.5 ⭐ (7.1k)", "Grátis", "R. Cel. Quirino, 2 - Bosque, Campinas"),
+                            Venue("Mata de Santa Genebra", "4.6 ⭐ (1.2k)", "Grátis", "R. Mata Atlântica, 447 - Bosque de Barão, Campinas")
                         )
                     } else {
                         listOf(
-                            Venue("Cinemark VIP Shopping Cidade São Paulo", "4.6 ⭐ (4.1k)", "R$ 45 - R$ 95", "Av. Paulista, 1230 - Bela Vista, São Paulo"),
-                            Venue("Cinépolis VIP JK Iguatemi", "4.8 ⭐ (3.8k)", "R$ 60 - R$ 120", "Av. Pres. Juscelino Kubitschek, 2041 - Itaim Bibi, São Paulo")
+                            Venue("Parque da Cantareira (Horto Florestal)", "4.7 ⭐ (14k)", "Grátis", "R. do Horto, 931 - Horto Florestal, São Paulo"),
+                            Venue("Parque Burle Marx", "4.7 ⭐ (16k)", "Grátis", "Av. Dona Helena Pereira de Moraes, 200 - Vila Andrade, São Paulo")
                         )
                     }
                 }
-                subCategory.contains("center") -> {
+                sub.contains("pista") || sub.contains("orla") -> {
                     if (city == "Campinas") {
                         listOf(
-                            Venue("Shopping Parque Dom Pedro", "4.6 ⭐ (22k)", "Premium", "Av. Guilherme Campos, 500 - Campinas"),
-                            Venue("Shopping Iguatemi Campinas", "4.7 ⭐ (18k)", "Luxo", "Av. Iguatemi, 777 - Vila Brandina, Campinas")
+                            Venue("Pista da Lagoa do Taquaral", "4.8 ⭐ (15k)", "Grátis", "Av. Dr. Heitor Penteado, s/n - Taquaral, Campinas")
+                        )
+                    } else if (city == "Santos") {
+                        listOf(
+                            Venue("Jardins da Orla de Santos", "4.8 ⭐ (18k)", "Grátis", "Av. Vicente de Carvalho - Gonzaga, Santos"),
+                            Venue("Emissário Submarino Santos", "4.6 ⭐ (5.5k)", "Grátis", "Av. Pres. Wilson - José Menino, Santos")
                         )
                     } else {
                         listOf(
-                            Venue("Shopping Morumbi", "4.6 ⭐ (25k)", "Vários", "Av. Roque Petroni Júnior, 1089 - Santo Amaro, São Paulo"),
-                            Venue("Shopping JK Iguatemi", "4.7 ⭐ (12k)", "Marcas de Luxo", "Av. Pres. Juscelino Kubitschek, 2041 - Itaim Bibi, São Paulo"),
-                            Venue("Shopping Pátio Higienópolis", "4.6 ⭐ (11k)", "Gourmet", "R. Dr. Veiga Filho, 133 - Higienópolis, São Paulo")
+                            Venue("Parque Ibirapuera", "4.8 ⭐ (130k)", "Grátis", "Av. Pedro Álvares Cabral - Vila Mariana, São Paulo"),
+                            Venue("Parque Villa-Lobos", "4.7 ⭐ (45k)", "Grátis", "Av. Prof. Fonseca Rodrigues, 2001 - Alto de Pinheiros, São Paulo")
                         )
                     }
                 }
-                subCategory.contains("Arcade") -> {
+                sub.contains("lago") || sub.contains("represa") -> {
                     if (city == "Campinas") {
                         listOf(
-                            Venue("Boliche Dom Pedro", "4.3 ⭐ (1.5k)", "R$ 80 - R$ 160/hora", "Shopping Dom Pedro, Campinas")
+                            Venue("Parque Portugal (Lagoa do Taquaral)", "4.8 ⭐ (28k)", "Grátis", "Av. Dr. Heitor Penteado, 1671 - Parque Taquaral, Campinas"),
+                            Venue("Lago do Café", "4.4 ⭐ (3.2k)", "Grátis", "Av. Dr. Heitor Penteado, 2145 - Parque Taquaral, Campinas")
                         )
                     } else {
                         listOf(
-                            Venue("Villa Bowling West Plaza", "4.5 ⭐ (2.4k)", "R$ 90 - R$ 180/hora", "Av. Francisco Matarazzo - Água Branca, São Paulo"),
-                            Venue("Villa Bowling Vila Olímpia", "4.4 ⭐ (3.1k)", "R$ 100 - R$ 220/hora", "R. Olímpíadas, 360 - Vila Olímpia, São Paulo")
+                            Venue("Parque do Carmo (Lago)", "4.6 ⭐ (22k)", "Grátis", "Av. Afonso de Sampaio e Sousa, 951 - Itaquera, São Paulo"),
+                            Venue("Represa de Guarapiranga (Parque da Barragem)", "4.4 ⭐ (6.1k)", "Grátis", "Av. Atlântica, São Paulo")
                         )
                     }
                 }
-                else -> { // Sorveteria
+                else -> { // Jardim Botânico
                     if (city == "Campinas") {
                         listOf(
-                            Venue("Bacio di Latte Cambuí", "4.7 ⭐ (3.5k)", "R$ 18 - R$ 35", "R. Dr. Emílio Ribas, 1000 - Cambuí, Campinas"),
-                            Venue("Gelato Borelli Cambuí", "4.6 ⭐ (1.8k)", "R$ 16 - R$ 32", "R. Coronel Silva Teles, Campinas")
+                            Venue("Jardim Botânico do IAC", "4.5 ⭐ (1.5k)", "Grátis", "Av. Barão de Itapura, 1481 - Botafogo, Campinas")
+                        )
+                    } else if (city == "Santos") {
+                        listOf(
+                            Venue("Jardim Botânico de Santos Chico Mendes", "4.6 ⭐ (3.8k)", "Grátis", "R. João Fraccaroli, s/n - Bom Retiro, Santos")
                         )
                     } else {
                         listOf(
-                            Venue("Bacio di Latte Oscar Freire", "4.7 ⭐ (8.5k)", "R$ 18 - R$ 35", "Rua Oscar Freire, 136 - Cerqueira César, São Paulo"),
-                            Venue("Cuor di Crema Vila Nova Conceição", "4.5 ⭐ (1.4k)", "R$ 17 - R$ 32", "R. João Lourenço, 388 - São Paulo")
+                            Venue("Jardim Botânico de São Paulo", "4.7 ⭐ (21k)", "R$ 15 - R$ 25", "Av. Miguel Estefno, 3031 - Vila Água Funda, São Paulo")
+                        )
+                    }
+                }
+            }
+        }
+        cat.contains("bar") || cat.contains("lanche") || cat.contains("barato") -> {
+            when {
+                sub.contains("hamburg") -> {
+                    if (city == "Campinas") {
+                        listOf(
+                            Venue("Cabana Burger Cambuí", "4.6 ⭐ (3.5k)", "R$ 35 - R$ 65", "R. Dr. Guilherme da Silva, 400 - Cambuí, Campinas"),
+                            Venue("Bullguer Campinas", "4.4 ⭐ (2.1k)", "R$ 30 - R$ 55", "R. Coronel Silva Teles, 532 - Cambuí, Campinas"),
+                            Venue("Patties Campinas", "4.5 ⭐ (1.4k)", "R$ 25 - R$ 45", "R. Maria Monteiro, 800 - Cambuí, Campinas")
+                        )
+                    } else if (city == "Santos") {
+                        listOf(
+                            Venue("Seven Burgers", "4.6 ⭐ (1.6k)", "R$ 35 - R$ 60", "R. Dr. Marcílio Dias, 46 - Gonzaga, Santos"),
+                            Venue("Madero Container Santos", "4.3 ⭐ (2.4k)", "R$ 45 - R$ 75", "Av. Vicente de Carvalho, Santos")
+                        )
+                    } else {
+                        listOf(
+                            Venue("Patties Burger Jardins", "4.5 ⭐ (7.1k)", "R$ 25 - R$ 45", "Rua Professor Arthur Ramos, 795 - Pinheiros, São Paulo"),
+                            Venue("Cabana Burger Oscar Freire", "4.6 ⭐ (9.2k)", "R$ 35 - R$ 65", "Rua Oscar Freire, 560 - Cerqueira César, São Paulo"),
+                            Venue("Z-Deli Sandwich Shop", "4.7 ⭐ (8.5k)", "R$ 40 - R$ 75", "Rua Haddock Lobo, 1386 - Cerqueira César, São Paulo")
+                        )
+                    }
+                }
+                sub.contains("bar") || sub.contains("boteco") -> {
+                    if (city == "Campinas") {
+                        listOf(
+                            Venue("Seo Rosa Cambuí", "4.6 ⭐ (4.8k)", "R$ 40 - R$ 85", "R. Dr. Emílio Ribas, 567 - Cambuí, Campinas"),
+                            Venue("Bar do Alemão Campinas", "4.5 ⭐ (3.2k)", "R$ 50 - R$ 95", "Av. Barão de Itapura, 2088 - Botafogo, Campinas"),
+                            Venue("Grainne's Pub Cambuí", "4.5 ⭐ (3.9k)", "R$ 45 - R$ 90", "R. Glicério, 1665 - Cambuí, Campinas")
+                        )
+                    } else if (city == "Santos") {
+                        listOf(
+                            Venue("Bar do Toninho", "4.6 ⭐ (3.1k)", "R$ 35 - R$ 70", "Av. Dr. Epitácio Pessoa, 241 - Embaré, Santos"),
+                            Venue("Australiano Bar Santos", "4.4 ⭐ (1.8k)", "R$ 40 - R$ 80", "Av. Marechal Floriano Peixoto - Gonzaga, Santos")
+                        )
+                    } else {
+                        listOf(
+                            Venue("Bar Veloso (Vila Mariana)", "4.7 ⭐ (16k)", "R$ 35 - R$ 75", "R. Conceição Veloso, 54 - Vila Mariana, São Paulo"),
+                            Venue("Pirajá Faria Lima", "4.5 ⭐ (7.8k)", "R$ 45 - R$ 90", "Av. Brig. Faria Lima, 64 - Pinheiros, São Paulo"),
+                            Venue("Bar Brahma Centro", "4.5 ⭐ (18k)", "R$ 50 - R$ 100", "Av. São João, 677 - Centro, São Paulo")
+                        )
+                    }
+                }
+                sub.contains("drink") || sub.contains("coquetel") -> {
+                    if (city == "Campinas") {
+                        listOf(
+                            Venue("Rooftop Cambuí Lounge", "4.5 ⭐ (1.2k)", "R$ 45 - R$ 95", "Av. Júlio de Mesquita, Cambuí, Campinas"),
+                            Venue("The Lord's Pub & Drinks", "4.4 ⭐ (890)", "R$ 40 - R$ 85", "R. Américo Brasiliense, Cambuí, Campinas")
+                        )
+                    } else {
+                        listOf(
+                            Venue("SubAstor Vila Madalena", "4.7 ⭐ (4.5k)", "R$ 55 - R$ 110", "R. Delfina, 163 - Vila Madalena, São Paulo"),
+                            Venue("Guarita Bar Pinheiros", "4.6 ⭐ (3.8k)", "R$ 45 - R$ 90", "R. Simão Álvares, 952 - Pinheiros, São Paulo"),
+                            Venue("Frank Bar Maksoud", "4.6 ⭐ (2.2k)", "R$ 60 - R$ 120", "Alameda Campinas, 150 - Bela Vista, São Paulo")
+                        )
+                    }
+                }
+                sub.contains("sushi") || sub.contains("petisco") -> {
+                    if (city == "Campinas") {
+                        listOf(
+                            Venue("Kaishi Sushi Cambuí", "4.5 ⭐ (2.1k)", "R$ 65 - R$ 120", "R. Cel. Silva Teles, 340 - Cambuí, Campinas"),
+                            Venue("Taisho Sushi Campinas", "4.4 ⭐ (1.7k)", "R$ 60 - R$ 110", "R. Maria Monteiro, Cambuí, Campinas")
+                        )
+                    } else {
+                        listOf(
+                            Venue("Mori Chazeria Jardins", "4.6 ⭐ (3.2k)", "R$ 70 - R$ 140", "R. da Consolação, 3610 - Cerqueira César, São Paulo"),
+                            Venue("Izakaya Kurotaki", "4.6 ⭐ (1.8k)", "R$ 55 - R$ 110", "R. da Glória, Liberdade, São Paulo")
+                        )
+                    }
+                }
+                else -> { // Cafeteria & Doceria
+                    if (city == "Campinas") {
+                        listOf(
+                            Venue("Café Cambuí", "4.6 ⭐ (1.3k)", "R$ 20 - R$ 45", "R. Maria Monteiro, 1200 - Cambuí, Campinas"),
+                            Venue("Fran's Café Cambuí", "4.2 ⭐ (950)", "R$ 18 - R$ 38", "R. Coronel Silva Teles, Cambuí, Campinas"),
+                            Venue("Maria Antonieta Boulangerie", "4.7 ⭐ (4.1k)", "R$ 30 - R$ 65", "R. Cel. Quirino, 1239 - Cambuí, Campinas")
+                        )
+                    } else if (city == "Santos") {
+                        listOf(
+                            Venue("Café Carioca", "4.5 ⭐ (1.1k)", "R$ 15 - R$ 35", "Praça Visconde de Mauá, 1 - Centro, Santos"),
+                            Venue("Revo Coffee Santos", "4.7 ⭐ (1.8k)", "R$ 25 - R$ 55", "Av. Epitácio Pessoa, 737 - Ponta da Praia, Santos")
+                        )
+                    } else {
+                        listOf(
+                            Venue("Coffee Lab Pinheiros", "4.7 ⭐ (9.5k)", "R$ 20 - R$ 50", "R. Fradique Coutinho, 1340 - Pinheiros, São Paulo"),
+                            Venue("Padaria Bella Paulista", "4.5 ⭐ (18k)", "R$ 25 - R$ 65", "Rua Haddock Lobo, 354 - Cerqueira César, São Paulo")
+                        )
+                    }
+                }
+            }
+        }
+        cat.contains("restaurante") || cat.contains("ostenta") -> {
+            when {
+                sub.contains("românt") -> {
+                    if (city == "Campinas") {
+                        listOf(
+                            Venue("Cantina Bellini Ristorante", "4.7 ⭐ (3.1k)", "R$ 90 - R$ 180", "Av. José de Souza Campos, 425 - Cambuí, Campinas"),
+                            Venue("L'Alouette Campinas", "4.6 ⭐ (1.5k)", "R$ 80 - R$ 160", "R. Padre Almeida, 645 - Cambuí, Campinas")
+                        )
+                    } else {
+                        listOf(
+                            Venue("Terraço Itália", "4.6 ⭐ (12k)", "R$ 180 - R$ 380", "Av. Ipiranga, 344 - 41º andar - Centro Histórico, São Paulo"),
+                            Venue("Ruella Bistrô Vila Olímpia", "4.6 ⭐ (3.2k)", "R$ 110 - R$ 220", "R. João Cachoeira, 1507 - Vila Olímpia, São Paulo")
+                        )
+                    }
+                }
+                sub.contains("italian") || sub.contains("massa") -> {
+                    if (city == "Campinas") {
+                        listOf(
+                            Venue("Cantina do Bacco", "4.6 ⭐ (2.4k)", "R$ 75 - R$ 150", "R. Maria Monteiro, 1296 - Cambuí, Campinas"),
+                            Venue("Famiglia Giuliano Cambuí", "4.5 ⭐ (1.9k)", "R$ 70 - R$ 140", "R. Dr. Emílio Ribas, Cambuí, Campinas")
+                        )
+                    } else {
+                        listOf(
+                            Venue("Cantina Famiglia Mancini", "4.6 ⭐ (24k)", "R$ 110 - R$ 230", "R. Avanhandava, 81 - Bela Vista, São Paulo"),
+                            Venue("Nino Ristorante Itaim", "4.5 ⭐ (5.1k)", "R$ 120 - R$ 260", "R. Jerônimo da Veiga, 30 - Itaim Bibi, São Paulo")
+                        )
+                    }
+                }
+                sub.contains("japon") -> {
+                    if (city == "Campinas") {
+                        listOf(
+                            Venue("Kaishi Premium Cambuí", "4.6 ⭐ (2.8k)", "R$ 120 - R$ 240", "R. Cel. Silva Teles, 340 - Cambuí, Campinas"),
+                            Venue("Kindai Campinas", "4.5 ⭐ (3.1k)", "R$ 110 - R$ 220", "Av. José de Souza Campos, 425 - Cambuí, Campinas")
+                        )
+                    } else {
+                        listOf(
+                            Venue("Nakka Itaim Bibi", "4.7 ⭐ (4.2k)", "R$ 190 - R$ 380", "R. Pedroso Alvarenga, 1110 - Itaim Bibi, São Paulo"),
+                            Venue("Kosushi Shopping Cidade Jardim", "4.6 ⭐ (1.8k)", "R$ 220 - R$ 450", "Av. Magalhães de Castro, 12000 - São Paulo")
+                        )
+                    }
+                }
+                sub.contains("churrasc") || sub.contains("carne") -> {
+                    if (city == "Campinas") {
+                        listOf(
+                            Venue("Churrascaria Pobre Juan Campinas", "4.7 ⭐ (3.8k)", "R$ 140 - R$ 280", "Shopping Iguatemi Campinas, Campinas"),
+                            Venue("Sulina Churrascaria Barão", "4.5 ⭐ (4.1k)", "R$ 85 - R$ 160", "Av. Albino J. B. de Oliveira, 2000 - Barão Geraldo, Campinas")
+                        )
+                    } else {
+                        listOf(
+                            Venue("Fogo de Chão Jardins", "4.7 ⭐ (8.9k)", "R$ 180 - R$ 320", "R. Augusta, 2077 - Cerqueira César, São Paulo"),
+                            Venue("Barbacoa Itaim", "4.6 ⭐ (5.6k)", "R$ 170 - R$ 310", "R. Dr. Renato Paes de Barros, 65 - Itaim Bibi, São Paulo")
+                        )
+                    }
+                }
+                else -> { // Alta Gastronomia
+                    if (city == "Campinas") {
+                        listOf(
+                            Venue("Bellini Ristorante Cambuí", "4.8 ⭐ (3.5k)", "R$ 150 - R$ 300", "Av. José de Souza Campos, 425 - Cambuí, Campinas"),
+                            Venue("Maialini Cambuí", "4.7 ⭐ (1.8k)", "R$ 130 - R$ 260", "R. Emílio Ribas, 1247 - Cambuí, Campinas")
+                        )
+                    } else {
+                        listOf(
+                            Venue("D.O.M. Restaurante (Alex Atala)", "4.8 ⭐ (5.8k)", "R$ 350 - R$ 750", "R. Barão de Capanema, 549 - Cerqueira César, São Paulo"),
+                            Venue("Restaurante Fasano Jardins", "4.8 ⭐ (3.2k)", "R$ 300 - R$ 680", "R. Vitório Fasano, 88 - Cerqueira César, São Paulo")
+                        )
+                    }
+                }
+            }
+        }
+        else -> { // Shoppings
+            when {
+                sub.contains("cinema") -> {
+                    if (city == "Campinas") {
+                        listOf(
+                            Venue("Cinépolis VIP Shopping P. Dom Pedro", "4.6 ⭐ (4.2k)", "R$ 45 - R$ 90", "Av. Guilherme Campos, 500 - Jardim Santa Genebra, Campinas"),
+                            Venue("Kinoplex Iguatemi Campinas", "4.5 ⭐ (3.1k)", "R$ 35 - R$ 70", "Av. Iguatemi, 777 - Vila Brandina, Campinas")
+                        )
+                    } else {
+                        listOf(
+                            Venue("Cinemark VIP Cidade São Paulo", "4.7 ⭐ (4.8k)", "R$ 50 - R$ 95", "Av. Paulista, 1230 - Bela Vista, São Paulo"),
+                            Venue("Cinépolis VIP JK Iguatemi", "4.8 ⭐ (4.2k)", "R$ 65 - R$ 120", "Av. Pres. Juscelino Kubitschek, 2041 - Itaim Bibi, São Paulo")
+                        )
+                    }
+                }
+                sub.contains("sorvete") || sub.contains("gelato") -> {
+                    if (city == "Campinas") {
+                        listOf(
+                            Venue("Bacio di Latte Cambuí", "4.7 ⭐ (3.9k)", "R$ 18 - R$ 38", "R. Dr. Emílio Ribas, 1000 - Cambuí, Campinas"),
+                            Venue("Gelato Borelli Cambuí", "4.6 ⭐ (2.2k)", "R$ 16 - R$ 34", "R. Coronel Silva Teles, Cambuí, Campinas")
+                        )
+                    } else {
+                        listOf(
+                            Venue("Bacio di Latte Oscar Freire", "4.8 ⭐ (9.2k)", "R$ 18 - R$ 38", "Rua Oscar Freire, 136 - Cerqueira César, São Paulo"),
+                            Venue("Cuor di Crema Vila Nova Conceição", "4.6 ⭐ (1.8k)", "R$ 17 - R$ 35", "R. João Lourenço, 388 - São Paulo")
+                        )
+                    }
+                }
+                sub.contains("boliche") || sub.contains("jogo") || sub.contains("arcade") -> {
+                    if (city == "Campinas") {
+                        listOf(
+                            Venue("Boliche Dom Pedro", "4.4 ⭐ (1.8k)", "R$ 80 - R$ 160/hora", "Parque D. Pedro Shopping, Campinas")
+                        )
+                    } else {
+                        listOf(
+                            Venue("Villa Bowling West Plaza", "4.5 ⭐ (2.8k)", "R$ 90 - R$ 180/hora", "Av. Francisco Matarazzo - Água Branca, São Paulo"),
+                            Venue("Villa Bowling Vila Olímpia", "4.5 ⭐ (3.6k)", "R$ 100 - R$ 220/hora", "R. Olimpíadas, 360 - Vila Olímpia, São Paulo")
+                        )
+                    }
+                }
+                else -> { // Shopping Center
+                    if (city == "Campinas") {
+                        listOf(
+                            Venue("Parque D. Pedro Shopping", "4.7 ⭐ (35k)", "Completo", "Av. Guilherme Campos, 500 - Jardim Santa Genebra, Campinas"),
+                            Venue("Shopping Iguatemi Campinas", "4.7 ⭐ (24k)", "Sofisticado", "Av. Iguatemi, 777 - Vila Brandina, Campinas"),
+                            Venue("Galleria Shopping Campinas", "4.6 ⭐ (12k)", "Open Mall", "Rod. D. Pedro I, km 131,5 - Jardim Nilópolis, Campinas")
+                        )
+                    } else if (city == "Santos") {
+                        listOf(
+                            Venue("Praiamar Shopping Santos", "4.6 ⭐ (16k)", "Completo", "R. Alexandre Martins, 80 - Aparecida, Santos"),
+                            Venue("Miramar Shopping Santos", "4.4 ⭐ (8.2k)", "Tradicional", "R. Euclides da Cunha, 21 - Gonzaga, Santos")
+                        )
+                    } else {
+                        listOf(
+                            Venue("Morumbi Shopping", "4.7 ⭐ (32k)", "Completo", "Av. Roque Petroni Júnior, 1089 - Santo Amaro, São Paulo"),
+                            Venue("Shopping JK Iguatemi", "4.7 ⭐ (15k)", "Marcas de Luxo", "Av. Pres. Juscelino Kubitschek, 2041 - Itaim Bibi, São Paulo"),
+                            Venue("Shopping Pátio Higienópolis", "4.6 ⭐ (14k)", "Gourmet", "R. Dr. Veiga Filho, 133 - Higienópolis, São Paulo")
                         )
                     }
                 }
@@ -6065,37 +6244,17 @@ fun getVenueList(category: String, subCategory: String, locationFilter: String, 
     val rawList = getRawVenueList(category, subCategory, locationFilter, woman, locationAddress)
     return rawList.map { venue ->
         val rawHash = venue.name.hashCode() + venue.address.hashCode()
-        val hash = (if (rawHash == Int.MIN_VALUE) 0 else Math.abs(rawHash)) % 80
+        val hash = (if (rawHash == Int.MIN_VALUE) 0 else Math.abs(rawHash)) % 50
+        val distVal = 0.8 + (hash / 10.0) // 0.8 to 5.7 km (strictly within 7 km)
         
-        val disp = if (locationFilter == "Casa dela") {
-            0.3 + (hash % 15) / 10.0 // guarantees distance between 0.3 and 1.7 km from her house
+        val distLabel = if (locationFilter == "Casa dela" && woman != null) {
+            "%.1f km da casa de %s".format(java.util.Locale.US, distVal, woman.name)
         } else {
-            1.2 + (hash / 10.0) // guarantees value between 1.2 and 9.1 km
+            "%.1f km de você".format(java.util.Locale.US, distVal)
         }
         
-        val simulatedDistance = if (locationFilter == "Casa dela" && woman != null) {
-            "%.1f km da casa de ${woman.name}".format(java.util.Locale.US, disp)
-        } else {
-            "%.1f km".format(java.util.Locale.US, disp)
-        }
-
-        // Adapted nearby address modifier so it displays an address on the woman's street/area
-        var finalAddress = venue.address
-        if (locationFilter == "Casa dela" && woman != null && woman.address.isNotEmpty()) {
-            val womanAddressClean = woman.address.trim()
-            val commaIndex = womanAddressClean.indexOf(",")
-            val streetName = if (commaIndex != -1) womanAddressClean.substring(0, commaIndex).trim() else womanAddressClean
-            val cityPart = if (commaIndex != -1) womanAddressClean.substring(commaIndex + 1).trim() else ""
-            
-            finalAddress = if (streetName.isNotEmpty()) {
-                val num = 100 + (hash * 12) % 900
-                "$streetName, $num, $cityPart"
-            } else {
-                venue.address
-            }
-        }
-        
-        venue.copy(distance = simulatedDistance, address = finalAddress)
+        // Mantém sempre o endereço REAL e OFICIAL do estabelecimento para Waze e Google Maps
+        venue.copy(distance = distLabel, address = venue.address)
     }
 }
 
@@ -8535,11 +8694,12 @@ fun SeductionCoachScreen(viewModel: AgendaViewModel) {
 
         // API Key settings section at the top of either
         var showApiKeyPanel by remember { mutableStateOf(false) }
-        
+        var isKeyVisible by remember { mutableStateOf(false) }
+
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = cardBg.copy(alpha = 0.6f)),
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.05f))
+            border = BorderStroke(1.dp, PrimaryGold.copy(alpha = 0.25f))
         ) {
             Column {
                 Row(
@@ -8559,31 +8719,162 @@ fun SeductionCoachScreen(viewModel: AgendaViewModel) {
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Configurar Chave API do Gemini (gemini-flash-latest)",
+                            text = "Chave API do Gemini (gemini-flash-latest)",
                             color = textColor,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
-                    Text(text = if (showApiKeyPanel) "Recolher ▲" else "Expandir ▼", color = PrimaryGold, fontSize = 11.sp)
+
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        val headerBadgeColor = when (viewModel.apiKeyStatus) {
+                            "CONNECTED" -> Color(0xFF4CAF50)
+                            "TESTING" -> PrimaryGold
+                            else -> Color(0xFFEF5350)
+                        }
+                        val headerBadgeText = when (viewModel.apiKeyStatus) {
+                            "CONNECTED" -> "✅ Ativa"
+                            "TESTING" -> "⏳ Testando..."
+                            else -> "⚠️ Verificar"
+                        }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(100.dp))
+                                .background(headerBadgeColor.copy(alpha = 0.15f))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = headerBadgeText,
+                                color = headerBadgeColor,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Text(text = if (showApiKeyPanel) "▲" else "▼", color = PrimaryGold, fontSize = 11.sp)
+                    }
                 }
 
                 if (showApiKeyPanel) {
-                    Column(modifier = Modifier.padding(12.dp)) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            "O app usa automaticamente a chave integrada do ambiente (process.env.GEMINI_API_KEY / BuildConfig.GEMINI_API_KEY) com o modelo flash-latest. Se preferir fornecer sua própria chave personalizada, digite abaixo:",
+                            "O app valida e conecta automaticamente ao Google Gemini (gemini-flash-latest). Ao colar ou alterar a chave, o status de funcionamento é testado e confirmado em tempo real abaixo:",
                             color = textVariantColor,
                             fontSize = 11.sp,
-                            modifier = Modifier.padding(bottom = 8.dp)
+                            lineHeight = 15.sp
                         )
                         OutlinedTextField(
                             value = viewModel.coachApiKeyInput,
                             onValueChange = { viewModel.coachApiKeyInput = it },
                             modifier = Modifier.fillMaxWidth(),
-                            visualTransformation = PasswordVisualTransformation(),
-                            placeholder = { Text("Chave opcional do Google AI Studio...", fontSize = 12.sp) },
-                            colors = OutlinedTextFieldDefaults.colors(focusedTextColor = textColor, unfocusedTextColor = textColor, focusedBorderColor = PrimaryGold)
+                            visualTransformation = if (isKeyVisible) androidx.compose.ui.text.input.VisualTransformation.None else PasswordVisualTransformation(),
+                            trailingIcon = {
+                                IconButton(onClick = { isKeyVisible = !isKeyVisible }) {
+                                    Icon(
+                                        imageVector = if (isKeyVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                        contentDescription = if (isKeyVisible) "Ocultar Chave" else "Mostrar Chave",
+                                        tint = PrimaryGold
+                                    )
+                                }
+                            },
+                            placeholder = { Text("Cole sua chave AI Studio...", fontSize = 12.sp) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = textColor,
+                                unfocusedTextColor = textColor,
+                                focusedBorderColor = PrimaryGold
+                            ),
+                            singleLine = true
                         )
+
+                        // Status Banner in real-time
+                        val statusBg = when (viewModel.apiKeyStatus) {
+                            "CONNECTED" -> Color(0xFF4CAF50).copy(alpha = 0.12f)
+                            "TESTING" -> PrimaryGold.copy(alpha = 0.12f)
+                            else -> Color(0xFFEF5350).copy(alpha = 0.12f)
+                        }
+                        val statusBorder = when (viewModel.apiKeyStatus) {
+                            "CONNECTED" -> Color(0xFF4CAF50).copy(alpha = 0.4f)
+                            "TESTING" -> PrimaryGold.copy(alpha = 0.4f)
+                            else -> Color(0xFFEF5350).copy(alpha = 0.4f)
+                        }
+                        val statusTextColor = when (viewModel.apiKeyStatus) {
+                            "CONNECTED" -> Color(0xFF4CAF50)
+                            "TESTING" -> PrimaryGold
+                            else -> Color(0xFFEF5350)
+                        }
+
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = statusBg),
+                            border = BorderStroke(1.dp, statusBorder),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                when (viewModel.apiKeyStatus) {
+                                    "TESTING" -> {
+                                        CircularProgressIndicator(
+                                            color = PrimaryGold,
+                                            modifier = Modifier.size(16.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                    }
+                                    "CONNECTED" -> {
+                                        Icon(
+                                            imageVector = Icons.Default.CheckCircle,
+                                            contentDescription = "Conectado",
+                                            tint = Color(0xFF4CAF50),
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                    else -> {
+                                        Icon(
+                                            imageVector = Icons.Default.Warning,
+                                            contentDescription = "Erro",
+                                            tint = Color(0xFFEF5350),
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = viewModel.apiKeyStatusMessage,
+                                    color = statusTextColor,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = { viewModel.testApiKeyConnection() },
+                                colors = ButtonDefaults.buttonColors(containerColor = PrimaryGold, contentColor = OnPrimaryGold),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f).height(36.dp),
+                                contentPadding = PaddingValues(0.dp)
+                            ) {
+                                Text("🔄 Testar Agora", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+
+                            Button(
+                                onClick = {
+                                    viewModel.coachApiKeyInput = com.example.data.GeminiApiClient.DEFAULT_FALLBACK_KEY
+                                    Toast.makeText(context, "Chave padrão redefinida com sucesso!", Toast.LENGTH_SHORT).show()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = PrimaryGold.copy(alpha = 0.15f), contentColor = PrimaryGold),
+                                border = BorderStroke(1.dp, PrimaryGold.copy(alpha = 0.3f)),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f).height(36.dp),
+                                contentPadding = PaddingValues(0.dp)
+                            ) {
+                                Text("🔑 Restaurar Chave", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 }
             }
@@ -8770,6 +9061,49 @@ fun SeductionCoachScreen(viewModel: AgendaViewModel) {
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("Copiar Feedback do Coach", fontSize = 12.sp)
                         }
+                    }
+                }
+            }
+
+            if (viewModel.coachDateStrategyResult.isNotEmpty()) {
+                Text("ESTRATEGISTA DE DATE IA (ROTEIRO & ESCALADA ÍNTIMA) 📍", color = PrimaryGold, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = cardBg),
+                    border = BorderStroke(1.2.dp, PrimaryGold.copy(alpha = 0.6f)),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text("🍸", fontSize = 18.sp)
+                                Text("Roteiro Tático do Date", color = textColor, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Button(
+                                onClick = {
+                                    clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(viewModel.coachDateStrategyResult))
+                                    Toast.makeText(context, "Estratégia de Date copiada! 📋", Toast.LENGTH_SHORT).show()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = PrimaryGold, contentColor = OnPrimaryGold),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Icon(imageVector = Icons.Default.ContentCopy, contentDescription = "Copy", modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Copiar Roteiro", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = viewModel.coachDateStrategyResult,
+                            color = textColor,
+                            fontSize = 13.sp,
+                            lineHeight = 19.sp
+                        )
                     }
                 }
             }
@@ -9522,7 +9856,7 @@ fun WomanDetailDialog(
                     Tab(
                         selected = selectedTab == 2,
                         onClick = { selectedTab = 2 },
-                        text = { Text("Sugestões Date (SP)", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                        text = { Text("Sugestões de Date", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
                     )
                 }
 
@@ -9760,7 +10094,7 @@ fun WomanDetailDialog(
 
                         2 -> {
                             var selectedLocationFilter by remember { mutableStateOf("Casa dela") }
-                            var selectedCategory by remember { mutableStateOf("Date Barato") }
+                            var selectedCategory by remember { mutableStateOf("Motel") }
                             var selectedSubCategory by remember { mutableStateOf<String?>(null) }
                             val context = LocalContext.current
 
@@ -9768,16 +10102,33 @@ fun WomanDetailDialog(
                             var showGPSModifierDialog by remember { mutableStateOf(false) }
 
                             // Dynamic resolution of city and reference address for calculations
-                            val (locationAddress, myGPSLocation) = remember(selectedLocationFilter, myCurrentGPSByWaze) {
-                                val gps = myCurrentGPSByWaze
+                            val (locationAddress, myGPSLocation) = remember(selectedLocationFilter, myCurrentGPSByWaze, viewModel.userGpsAddress) {
+                                val gps = if (viewModel.userGpsAddress.isNotBlank()) viewModel.userGpsAddress else myCurrentGPSByWaze
                                 val addr = when (selectedLocationFilter) {
                                     "Minha localização" -> gps
                                     "Casa dela" -> {
-                                        if (partner.address.isNotEmpty()) partner.address else "Campinas, SP"
+                                        if (partner.address.isNotBlank()) partner.address else gps
                                     }
                                     else -> gps
                                 }
                                 Pair(addr, gps)
+                            }
+
+                            Button(
+                                onClick = {
+                                    viewModel.destinationPartnerId = partner.id
+                                    viewModel.destinationLocationFilter = selectedLocationFilter
+                                    viewModel.currentTab = MainTab.DATE_SUGGESTIONS
+                                    onDismiss()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = PrimaryGold, contentColor = OnPrimaryGold),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 40.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Icon(imageVector = Icons.Default.Place, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Text("Abrir no Módulo Completo de Sugestões (7 km)", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
 
                             Row(
@@ -9814,7 +10165,7 @@ fun WomanDetailDialog(
                                         border = BorderStroke(1.dp, PrimaryGold)
                                     ) {
                                         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                            Text("Simular Localização GPS do Celular", color = textColor, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                            Text("Definir Localização do GPS", color = textColor, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                                             var tempGpsText by remember { mutableStateOf(myCurrentGPSByWaze) }
                                             OutlinedTextField(
                                                 value = tempGpsText,
@@ -9830,8 +10181,9 @@ fun WomanDetailDialog(
                                                 Spacer(modifier = Modifier.width(8.dp))
                                                 Button(
                                                     onClick = {
-                                                        if (tempGpsText.isNotEmpty()) {
+                                                        if (tempGpsText.isNotBlank()) {
                                                             myCurrentGPSByWaze = tempGpsText
+                                                            viewModel.setManualLocation(tempGpsText)
                                                         }
                                                         showGPSModifierDialog = false
                                                     },
@@ -9926,25 +10278,7 @@ fun WomanDetailDialog(
                                 }
                             }
 
-                            // Custom Category Selector 2x2 grid
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                CategoryGridCard(
-                                    label = "Date Barato",
-                                    icon = "🍺",
-                                    isSelected = selectedCategory == "Date Barato",
-                                    onClick = { selectedCategory = "Date Barato"; selectedSubCategory = null },
-                                    modifier = Modifier.weight(1f),
-                                    viewModel = viewModel
-                                )
-                                CategoryGridCard(
-                                    label = "Ostentação",
-                                    icon = "💎",
-                                    isSelected = selectedCategory == "Ostentação",
-                                    onClick = { selectedCategory = "Ostentação"; selectedSubCategory = null },
-                                    modifier = Modifier.weight(1f),
-                                    viewModel = viewModel
-                                )
-                            }
+                            // Categorias: Motel, Parques, Bar/Lanches, Restaurante, Shoppings
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 CategoryGridCard(
                                     label = "Motel",
@@ -9955,10 +10289,36 @@ fun WomanDetailDialog(
                                     viewModel = viewModel
                                 )
                                 CategoryGridCard(
-                                    label = "Shopping",
+                                    label = "Parques",
+                                    icon = "🌳",
+                                    isSelected = selectedCategory == "Parques",
+                                    onClick = { selectedCategory = "Parques"; selectedSubCategory = null },
+                                    modifier = Modifier.weight(1f),
+                                    viewModel = viewModel
+                                )
+                                CategoryGridCard(
+                                    label = "Shoppings",
                                     icon = "🛍️",
-                                    isSelected = selectedCategory == "Shopping",
-                                    onClick = { selectedCategory = "Shopping"; selectedSubCategory = null },
+                                    isSelected = selectedCategory == "Shoppings",
+                                    onClick = { selectedCategory = "Shoppings"; selectedSubCategory = null },
+                                    modifier = Modifier.weight(1f),
+                                    viewModel = viewModel
+                                )
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                CategoryGridCard(
+                                    label = "Bar/Lanches",
+                                    icon = "🍔",
+                                    isSelected = selectedCategory == "Bar/Lanches",
+                                    onClick = { selectedCategory = "Bar/Lanches"; selectedSubCategory = null },
+                                    modifier = Modifier.weight(1f),
+                                    viewModel = viewModel
+                                )
+                                CategoryGridCard(
+                                    label = "Restaurante",
+                                    icon = "🍽️",
+                                    isSelected = selectedCategory == "Restaurante",
+                                    onClick = { selectedCategory = "Restaurante"; selectedSubCategory = null },
                                     modifier = Modifier.weight(1f),
                                     viewModel = viewModel
                                 )
@@ -9966,29 +10326,37 @@ fun WomanDetailDialog(
 
                             // Subcategories dropdown lists
                             val subCategories = when (selectedCategory) {
-                                "Date Barato" -> listOf(
-                                    Pair("☕ Café / Restaurante", "☕"),
-                                    Pair("🍔 Hamburgueria", "🍔"),
-                                    Pair("🌳 Parque público", "🌳"),
-                                    Pair("🍺 Bar", "🍺")
-                                )
-                                "Ostentação" -> listOf(
-                                    Pair("🥂 Restaurante fino", "🥂"),
-                                    Pair("🍱 Japonês premium", "🍱"),
-                                    Pair("🌃 Rooftop bar", "🌃"),
-                                    Pair("🏨 Hotel boutique", "🏨")
-                                )
                                 "Motel" -> listOf(
-                                    Pair("🏩 Motel Premium", "🏩"),
-                                    Pair("💵 Motel Barato", "💵"),
-                                    Pair("🛁 Motel com ofurô", "🛁"),
-                                    Pair("🌹 Suíte temática", "🌹")
+                                    Pair("💵 Barato / Econômico", "💵"),
+                                    Pair("💎 Ostentação / Luxo", "💎"),
+                                    Pair("🛁 Com Hidro / Ofurô", "🛁"),
+                                    Pair("🌹 Suíte Temática", "🌹")
                                 )
-                                else -> listOf( // "Shopping"
+                                "Parques" -> listOf(
+                                    Pair("🌳 Bosque & Natureza", "🌳"),
+                                    Pair("🏃 Pista & Orla", "🏃"),
+                                    Pair("🌊 Lago & Represa", "🌊"),
+                                    Pair("🌺 Jardim Botânico", "🌺")
+                                )
+                                "Bar/Lanches" -> listOf(
+                                    Pair("🍔 Hamburgueria", "🍔"),
+                                    Pair("🍺 Bar & Boteco", "🍺"),
+                                    Pair("🍸 Drinks & Coquetelaria", "🍸"),
+                                    Pair("🍣 Sushi & Petiscos", "🍣"),
+                                    Pair("☕ Cafeteria & Doceria", "☕")
+                                )
+                                "Restaurante" -> listOf(
+                                    Pair("🕯️ Romântico a Dois", "🕯️"),
+                                    Pair("🍝 Italiano & Massas", "🍝"),
+                                    Pair("🍱 Japonês Premium", "🍱"),
+                                    Pair("🥩 Churrascaria & Carnes", "🥩"),
+                                    Pair("🥂 Alta Gastronomia", "🥂")
+                                )
+                                else -> listOf( // "Shoppings"
+                                    Pair("🛍️ Shopping Center", "🛍️"),
                                     Pair("🎬 Cinema", "🎬"),
-                                    Pair("🛍️ Shopping center", "🛍️"),
-                                    Pair("🎮 Arcade / Boliche", "🎮"),
-                                    Pair("🍧 Sorveteria", "🍧")
+                                    Pair("🍨 Sorveteria & Gelato", "🍨"),
+                                    Pair("🎳 Boliche & Jogos", "🎳")
                                 )
                             }
 
@@ -10089,7 +10457,7 @@ fun WomanDetailDialog(
                                                                     ) {
                                                                         Column(modifier = Modifier.weight(1f)) {
                                                                             Text(text = venue.name, color = textColor, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                                                            Text(text = venue.address, color = textVariantColor.copy(alpha = 0.6f), fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                                            Text(text = venue.address, color = textVariantColor.copy(alpha = 0.6f), fontSize = 9.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                                                         }
                                                                         Spacer(modifier = Modifier.width(4.dp))
                                                                         Column(horizontalAlignment = Alignment.End) {
@@ -10104,6 +10472,46 @@ fun WomanDetailDialog(
                                                                             Text(text = venue.price, color = textVariantColor, fontSize = 8.sp)
                                                                             Spacer(modifier = Modifier.height(2.dp))
                                                                             Text(text = "🛣️ ${venue.distance}", color = Color(0xFF4CAF50), fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                                                                        }
+                                                                    }
+                                                                    Spacer(modifier = Modifier.height(6.dp))
+                                                                    Row(
+                                                                        modifier = Modifier.fillMaxWidth(),
+                                                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                                    ) {
+                                                                        Button(
+                                                                            onClick = {
+                                                                                val query = "${venue.name}, ${venue.address}"
+                                                                                val encoded = Uri.encode(query)
+                                                                                try {
+                                                                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=$encoded")))
+                                                                                } catch (e: Exception) {
+                                                                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/maps/search/?api=1&query=$encoded")))
+                                                                                }
+                                                                            },
+                                                                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryGold, contentColor = OnPrimaryGold),
+                                                                            shape = RoundedCornerShape(4.dp),
+                                                                            modifier = Modifier.weight(1f).height(26.dp),
+                                                                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                                                        ) {
+                                                                            Text("🗺️ Maps", fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                                                        }
+                                                                        Button(
+                                                                            onClick = {
+                                                                                val query = "${venue.name}, ${venue.address}"
+                                                                                val encoded = Uri.encode(query)
+                                                                                try {
+                                                                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("waze://?q=$encoded&navigate=yes")))
+                                                                                } catch (e: Exception) {
+                                                                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://waze.com/ul?q=$encoded&navigate=yes")))
+                                                                                }
+                                                                            },
+                                                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00C1FF), contentColor = Color.White),
+                                                                            shape = RoundedCornerShape(4.dp),
+                                                                            modifier = Modifier.weight(1f).height(26.dp),
+                                                                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                                                        ) {
+                                                                            Text("🚗 Waze", fontSize = 9.sp, fontWeight = FontWeight.Bold)
                                                                         }
                                                                     }
                                                                 }
